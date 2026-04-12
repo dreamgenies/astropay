@@ -1,48 +1,30 @@
 # ASTROpay
 
-ASTROpay is a hosted USDC payment-link and invoicing platform on Stellar.
+Stripe for USDC on Stellar.
 
-This repository currently contains two major codebases:
+ASTROpay helps merchants create USDC payment links, serve hosted checkout pages, manage invoices, reconcile payments, and split platform fees on Stellar.
 
-- `usdc-payment-link-tool/`: the Next.js application, UI, and the original route-handler backend
-- `rust-backend/`: the Rust API migration, where backend responsibilities are being moved deliberately instead of being left inside the frontend runtime forever
+## Features
 
-## Current architecture
+- Payment links
+- Hosted checkout
+- Invoices
+- Reconciliation
+- Fee splitting
 
-The product still serves the web experience from Next.js, but the backend is being pulled into Rust for the parts that matter operationally:
+## Tech Stack
 
-- merchant auth and session handling
-- invoice creation and retrieval
-- webhook-driven payment marking
-- SQL-backed migration execution
-- reconciliation logic against Horizon
+- Next.js
+- PostgreSQL
+- Stellar SDK
+- Freighter wallet
 
-The Rust backend is not at full feature parity yet. It still needs the remaining Stellar-heavy pieces completed properly:
+## Project Structure
 
-- checkout XDR generation/submission
-- merchant settlement execution
-- full cron settlement flow
+- `usdc-payment-link-tool/` — Next.js app and current product UI
+- `rust-backend/` — Rust backend migration and service foundation
 
-That split is intentional. A fake “all-Rust now” claim would be dishonest.
-
-## Repository layout
-
-### `usdc-payment-link-tool`
-
-- Next.js App Router frontend
-- current checkout UI
-- current deployment configs for Vercel, Railway, and Docker
-- existing TypeScript implementation of backend behavior
-
-### `rust-backend`
-
-- Axum-based API service
-- Postgres connection pool
-- cookie-backed JWT sessions
-- Rust migration runner
-- Rust reconciliation path and backend service foundation
-
-## Local development
+## Local Setup
 
 ### Next.js app
 
@@ -64,18 +46,51 @@ cargo run --bin migrate
 cargo run
 ```
 
-## Deployment reality
+## Deployment
 
-If you are evaluating the repo for production-readiness, read:
+### Vercel
 
-- [`usdc-payment-link-tool/DEPLOY_CHECKLIST.md`](</home/dreamgene/Downloads/astropay-v2/usdc-payment-link-tool/DEPLOY_CHECKLIST.md>)
-- [`rust-backend/README.md`](</home/dreamgene/Downloads/astropay-v2/rust-backend/README.md>)
+1. Import the repo into Vercel.
+2. Set the required environment variables.
+3. Attach PostgreSQL or connect an external Postgres instance.
+4. Deploy the Next.js app from `usdc-payment-link-tool/`.
 
-The right reading is not “Rust solved everything.”
+### Railway
 
-The right reading is:
+1. Create a new Railway project.
+2. Add PostgreSQL.
+3. Deploy the app service from `usdc-payment-link-tool/`.
+4. Set the required environment variables.
+5. Run migrations before production traffic.
 
-- the frontend exists
-- the backend extraction has started
-- the Rust service is real
-- the remaining parity work is still explicit
+## Environment Variables
+
+- `APP_URL`
+- `NEXT_PUBLIC_APP_URL`
+- `DATABASE_URL`
+- `PGSSL`
+- `SESSION_SECRET`
+- `CRON_SECRET`
+- `STELLAR_NETWORK`
+- `NEXT_PUBLIC_STELLAR_NETWORK`
+- `HORIZON_URL`
+- `NETWORK_PASSPHRASE`
+- `ASSET_CODE`
+- `ASSET_ISSUER`
+- `PLATFORM_TREASURY_PUBLIC_KEY`
+- `PLATFORM_TREASURY_SECRET_KEY`
+- `PLATFORM_FEE_BPS`
+- `INVOICE_EXPIRY_HOURS`
+
+## Screenshots
+
+Add product screenshots here:
+
+- Dashboard
+- Hosted checkout
+- Invoice detail
+- Payment flow
+
+## License
+
+MIT
