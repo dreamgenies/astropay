@@ -93,6 +93,7 @@ That backlog is intentionally grounded in the current repo state:
 - Next.js still owns checkout XDR build and settlement execution today
 - Rust owns only part of the operational backend
 - contributor issues should move the architecture forward without pretending parity already exists
+- follow-up repo hygiene work is tracked in GitHub issues [#252](https://github.com/dreamgenies/astropay/issues/252) and [#253](https://github.com/dreamgenies/astropay/issues/253)
 
 To publish the markdown backlog as real GitHub issues after re-authenticating the CLI:
 
