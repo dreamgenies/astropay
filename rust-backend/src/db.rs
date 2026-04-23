@@ -6,6 +6,10 @@
 //! **Dead-letter** — `payout_dead_letters` (see migration `005_payout_dead_letter.sql`) holds
 //! payouts that have failed [`crate::handlers::cron::PAYOUT_DEAD_LETTER_THRESHOLD`] times.
 //! Operators must resolve these manually; no automatic retry is attempted once dead-lettered.
+//! **Payout retry tracking** — columns `failure_count`, `last_failure_at`, and `last_failure_reason`
+//! on the `payouts` table (see migration `007_payout_attempt_counters_and_last_error.sql`) enable
+//! operators to inspect and debug settlement failures. The cron settle handler updates these
+//! fields on each retry and escalates to dead-letter once [`crate::handlers::cron::PAYOUT_DEAD_LETTER_THRESHOLD`] is reached.
 //! **Invoice `metadata` (JSONB)** — today the API stores a small opaque object and does not
 //! filter on it in SQL. Do not add JSONB indexes until a real `WHERE` / `ORDER BY` / `JOIN`
 //! pattern lands in application code; see `../usdc-payment-link-tool/migrations/003_invoice_metadata_jsonb_index_plan.sql`
@@ -142,6 +146,25 @@ mod tests {
         assert!(
             sql.contains("DROP INDEX IF EXISTS sessions_expires_at_idx"),
             "replaces single-column expires_at index from 001"
+        );
+    }
+
+    #[test]
+    fn payout_attempt_counters_migration_defines_tracking_columns() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/007_payout_attempt_counters_and_last_error.sql");
+        let sql = std::fs::read_to_string(path).expect("read 007_payout_attempt_counters_and_last_error.sql");
+        assert!(
+            sql.contains("last_failure_reason TEXT"),
+            "migration must add last_failure_reason column to track most recent error"
+        );
+        assert!(
+            sql.contains("payouts_last_failure_at_idx"),
+            "migration must create index on last_failure_at for failure discovery queries"
+        );
+        assert!(
+            sql.contains("ALTER TABLE payouts"),
+            "migration must alter payouts table (idempotent with IF NOT EXISTS)"
         );
     }
 }

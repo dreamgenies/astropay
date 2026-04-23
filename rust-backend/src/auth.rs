@@ -354,33 +354,6 @@ mod tests {
 
     // --- wallet key conflict ---
 
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer x"),
-        );
-        assert!(authorize_cron_request("", &headers).is_err());
-    }
-
-    #[test]
-    fn authorize_cron_rejects_wrong_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer wrong"),
-        );
-        assert!(authorize_cron_request("cron_secret", &headers).is_err());
-    }
-
-    #[test]
-    fn authorize_cron_rejects_when_secret_not_configured() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer anything"),
-        );
-        assert!(authorize_cron_request("", &headers).is_err());
-    }
-
     #[test]
     fn wallet_conflict_detects_stellar_reuse() {
         let s1 = g_key('1');

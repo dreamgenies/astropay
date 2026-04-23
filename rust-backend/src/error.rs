@@ -64,9 +64,6 @@ pub enum AppError {
     Unauthorized(UnauthorizedError),
     #[error("Too many login attempts")]
     RateLimited { retry_after_seconds: u64 },
-    RateLimited {
-        retry_after_seconds: u64,
-    },
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
@@ -172,9 +169,6 @@ impl IntoResponse for AppError {
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(LegacyErrorBody { error: "Unexpected error".to_string() }),
-                Json(LegacyErrorBody {
-                    error: "Unexpected error".to_string(),
-                }),
             )
                 .into_response(),
         }
