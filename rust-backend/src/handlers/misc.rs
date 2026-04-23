@@ -1,12 +1,13 @@
 use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
+use tracing::warn;
 
 use crate::{
     AppState,
     auth::authorize_cron_request,
     error::AppError,
     models::StellarWebhookRequest,
-    AppState, error::AppError, models::StellarWebhookRequest, stellar::is_valid_account_public_key,
+    stellar::is_valid_account_public_key,
 };
 
 pub async fn health() -> Json<Value> {
@@ -26,6 +27,23 @@ pub async fn stellar_webhook(
     }
 
     let mut client = state.pool.get().await?;
+
+    // Store raw payload with source metadata for audit/debugging (AP-160).
+    let raw_body = json!({
+        "publicId": payload.public_id,
+        "transactionHash": payload.transaction_hash,
+        "rest": payload.rest,
+    });
+    if let Err(e) = client
+        .execute(
+            "INSERT INTO webhook_raw_payloads (source, payload) VALUES ($1, $2)",
+            &[&"stellar", &tokio_postgres::types::Json(&raw_body)],
+        )
+        .await
+    {
+        warn!(error = %e, "webhook_raw_payloads insert failed");
+    }
+
     let row = client
         .query_opt(
             "SELECT id, status FROM invoices WHERE public_id = $1",
@@ -110,3 +128,17 @@ pub async fn stellar_webhook(
     })))
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn raw_payload_json_includes_all_fields() {
+        let body = serde_json::json!({
+            "publicId": "inv_abc",
+            "transactionHash": "deadbeef",
+            "rest": { "amount": "10.00" },
+        });
+        assert_eq!(body["publicId"], "inv_abc");
+        assert_eq!(body["transactionHash"], "deadbeef");
+        assert!(body["rest"].is_object());
+    }
+}
