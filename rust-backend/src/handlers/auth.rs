@@ -8,7 +8,7 @@ use crate::{
         SESSION_COOKIE, clear_session_cookie, create_session, current_merchant, hash_password,
         verify_password,
     },
-    error::AppError,
+    error::{AppError, AuthErrorCode},
     models::{LoginRequest, RegisterRequest},
     stellar::is_valid_account_public_key,
 };
@@ -73,12 +73,12 @@ pub async fn login(
         )
         .await?;
     let Some(row) = row else {
-        return Err(AppError::unauthorized("Invalid credentials"));
+        return Err(AppError::unauthorized_code(AuthErrorCode::InvalidCredentials));
     };
     let merchant = crate::models::Merchant::from_row(&row);
     let password_hash: String = row.get("password_hash");
     if !verify_password(&payload.password, &password_hash) {
-        return Err(AppError::unauthorized("Invalid credentials"));
+        return Err(AppError::unauthorized_code(AuthErrorCode::InvalidCredentials));
     }
     let cookie = create_session(&client, &state.config, merchant.id).await?;
     Ok((
@@ -110,7 +110,7 @@ pub async fn me(
     .await?;
     match merchant {
         Some(merchant) => Ok(Json(json!({ "merchant": merchant }))),
-        None => Err(AppError::unauthorized("Unauthorized")),
+        None => Err(AppError::unauthorized_code(AuthErrorCode::SessionRequired)),
     }
 }
 

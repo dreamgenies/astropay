@@ -2,6 +2,10 @@ use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
 
 use crate::{
+    AppState,
+    auth::authorize_cron_request,
+    error::AppError,
+    models::StellarWebhookRequest,
     AppState, error::AppError, models::StellarWebhookRequest, stellar::is_valid_account_public_key,
 };
 
@@ -14,7 +18,7 @@ pub async fn stellar_webhook(
     headers: HeaderMap,
     Json(payload): Json<StellarWebhookRequest>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron(&state, &headers)?;
+    authorize_cron_request(&state.config.cron_secret, &headers)?;
     if payload.public_id.is_empty() || payload.transaction_hash.is_empty() {
         return Err(AppError::bad_request(
             "publicId and transactionHash are required",
@@ -106,14 +110,3 @@ pub async fn stellar_webhook(
     })))
 }
 
-fn authorize_cron(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
-    let token = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if token == Some(state.config.cron_secret.as_str()) {
-        Ok(())
-    } else {
-        Err(AppError::unauthorized("Unauthorized"))
-    }
-}

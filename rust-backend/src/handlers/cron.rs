@@ -6,6 +6,7 @@ use tracing::warn;
 
 use crate::{
     AppState,
+    auth::authorize_cron_request,
     error::AppError,
     models::Invoice,
     stellar::{find_payment_for_invoice, invoice_is_expired, is_valid_account_public_key},
@@ -15,7 +16,7 @@ pub async fn reconcile(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron(&state, &headers)?;
+    authorize_cron_request(&state.config.cron_secret, &headers)?;
     let mut client = state.pool.get().await?;
     let rows = client
         .query(
@@ -135,6 +136,17 @@ pub async fn settle(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
+    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    Err(AppError::not_implemented(
+        "Rust settlement execution is not implemented yet. Port the Stellar transaction signing/submission path before claiming payout parity.",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    use crate::auth::authorize_cron_request;
     authorize_cron(&state, &headers)?;
     let msg = "Rust settlement execution is not implemented yet. Port the Stellar transaction signing/submission path before claiming payout parity.";
     let client = state.pool.get().await?;
@@ -177,15 +189,17 @@ mod tests {
     fn authorizes_valid_bearer_token() {
         let mut headers = HeaderMap::new();
         headers.insert(
-            "authorization",
+            header::AUTHORIZATION,
             HeaderValue::from_static("Bearer cron_secret"),
         );
+        assert!(authorize_cron_request("cron_secret", &headers).is_ok());
         assert!(authorize_cron_secret("cron_secret", &headers).is_ok());
     }
 
     #[test]
     fn rejects_missing_bearer_token() {
         let headers = HeaderMap::new();
+        assert!(authorize_cron_request("cron_secret", &headers).is_err());
         assert!(authorize_cron_secret("cron_secret", &headers).is_err());
     }
 }

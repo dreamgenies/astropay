@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     auth::{SESSION_COOKIE, current_merchant, generate_memo, generate_public_id},
-    error::AppError,
+    error::{AppError, AuthErrorCode},
     models::{Invoice, InvoiceRequest, Merchant},
     stellar::build_checkout_url,
 };
@@ -161,5 +161,5 @@ async fn require_merchant(
         jar.get(SESSION_COOKIE).map(|cookie| cookie.value()),
     )
     .await?
-    .ok_or_else(|| AppError::unauthorized("Unauthorized"))
+    .ok_or_else(|| AppError::unauthorized_code(AuthErrorCode::SessionRequired))
 }

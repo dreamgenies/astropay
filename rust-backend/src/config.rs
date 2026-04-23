@@ -19,6 +19,7 @@ pub struct Config {
     pub platform_treasury_secret_key: Option<String>,
     pub platform_fee_bps: i32,
     pub invoice_expiry_hours: i64,
+    /// Shared secret for `Authorization: Bearer` on cron and Stellar webhook routes (see `auth::authorize_cron_request`).
     pub cron_secret: String,
     pub secure_cookies: bool,
 }
