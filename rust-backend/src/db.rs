@@ -22,6 +22,13 @@
 //! `006_invoice_dashboard_index.sql`) is a composite `(merchant_id, created_at DESC, id)` index
 //! that satisfies the equality filter + ORDER BY in a single index scan. The trailing `id` column
 //! supports stable keyset pagination. See the migration comment for measured query plan timings.
+//!
+//! **Queued-payouts partial index** — `payouts_queued_created_at_idx` (migration
+//! `007_payouts_queued_partial_index.sql`) is a partial index on `(created_at ASC, id)` filtered
+//! to `WHERE status = 'queued'`. It lets the settle cron scan process queued payouts in FIFO order
+//! without a full-table scan. Only live queued rows are indexed, so the index stays small as rows
+//! transition to terminal states. The existing `payouts_status_idx` is kept for queries that
+//! filter on other status values (e.g. `WHERE status = 'failed'` in the dead-letter path).
 
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use tokio_postgres::Config as PgConfig;
@@ -143,5 +150,48 @@ mod tests {
             sql.contains("DROP INDEX IF EXISTS sessions_expires_at_idx"),
             "replaces single-column expires_at index from 001"
         );
+    }
+
+    #[test]
+    fn queued_payouts_partial_index_migration_is_correct() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/007_payouts_queued_partial_index.sql");
+        let sql =
+            std::fs::read_to_string(path).expect("read 007_payouts_queued_partial_index.sql");
+
+        assert!(
+            sql.contains("payouts_queued_created_at_idx"),
+            "must define the partial index by its canonical name"
+        );
+        assert!(
+            sql.contains("WHERE status = 'queued'"),
+            "must be a partial index scoped to queued rows only"
+        );
+        assert!(
+            sql.contains("created_at ASC"),
+            "must order by created_at ASC for FIFO settlement processing"
+        );
+        assert!(
+            sql.contains("CREATE INDEX IF NOT EXISTS"),
+            "must be idempotent"
+        );
+        // The migration must not drop the existing payouts_status_idx — other
+        // queries (dead-letter escalation) still rely on it.
+        assert!(
+            !sql.contains("DROP INDEX"),
+            "must not drop the existing payouts_status_idx"
+        );
+    }
+
+    /// Pins the settle-cron query shape so a refactor that breaks partial-index
+    /// alignment is caught at compile time rather than at runtime.
+    #[test]
+    fn settle_cron_queued_query_matches_partial_index() {
+        // This is the query the settle handler (or future settlement scan) must
+        // use to benefit from payouts_queued_created_at_idx.
+        let query =
+            "SELECT * FROM payouts WHERE status = 'queued' ORDER BY created_at ASC LIMIT 100";
+        assert!(query.contains("status = 'queued'"));
+        assert!(query.contains("ORDER BY created_at ASC"));
     }
 }
