@@ -146,6 +146,32 @@ pub async fn reconcile(
     Ok(Json(body))
 }
 
+/// Deletes sessions whose `expires_at` is in the past.
+/// Safe to call repeatedly; each run is idempotent and logged to `cron_runs`.
+/// Trigger via `GET /api/cron/purge-sessions` with `Authorization: Bearer <CRON_SECRET>`.
+pub async fn purge_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    let client = state.pool.get().await?;
+    let deleted = client
+        .execute("DELETE FROM sessions WHERE expires_at <= NOW()", &[])
+        .await?;
+    let body = json!({ "deleted": deleted });
+    if let Err(e) = client
+        .execute(
+            "INSERT INTO cron_runs (job_type, started_at, finished_at, success, metadata, error_detail)
+             VALUES ('purge_sessions', NOW(), NOW(), true, $1, NULL)",
+            &[&PgJson(&body)],
+        )
+        .await
+    {
+        warn!(error = %e, "cron_runs audit insert failed for purge_sessions");
+    }
+    Ok(Json(body))
+}
+
 /// Scans `payouts` with status `failed` and increments their failure count.
 /// Once a payout reaches [`PAYOUT_DEAD_LETTER_THRESHOLD`] failures it is moved
 /// to `dead_lettered` status and a row is inserted into `payout_dead_letters`

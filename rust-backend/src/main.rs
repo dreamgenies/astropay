@@ -69,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/cron/reconcile", get(handlers::cron::reconcile))
         .route("/api/cron/settle", get(handlers::cron::settle))
+        .route("/api/cron/purge-sessions", get(handlers::cron::purge_sessions))
         .route(
             "/api/webhooks/stellar",
             post(handlers::misc::stellar_webhook),
