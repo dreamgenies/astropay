@@ -42,6 +42,7 @@ pub enum PayoutStatus {
     Submitted,
     Settled,
     Failed,
+    DeadLettered,
 }
 
 impl PayoutStatus {
@@ -51,6 +52,7 @@ impl PayoutStatus {
             "submitted" => Some(Self::Submitted),
             "settled" => Some(Self::Settled),
             "failed" => Some(Self::Failed),
+            "dead_lettered" => Some(Self::DeadLettered),
             _ => None,
         }
     }
@@ -89,7 +91,7 @@ pub fn validate_settle_transition(
     }
 
     match PayoutStatus::from_str(payout_status) {
-        Some(PayoutStatus::Settled) | Some(PayoutStatus::Failed) => {
+        Some(PayoutStatus::Settled) | Some(PayoutStatus::Failed) | Some(PayoutStatus::DeadLettered) => {
             return Err(SettleError::PayoutAlreadyTerminal {
                 actual: payout_status.to_string(),
             });
@@ -141,9 +143,19 @@ mod tests {
 
     #[test]
     fn payout_status_round_trips_all_variants() {
-        for s in ["queued", "submitted", "settled", "failed"] {
+        for s in ["queued", "submitted", "settled", "failed", "dead_lettered"] {
             assert!(PayoutStatus::from_str(s).is_some());
         }
+    }
+
+    #[test]
+    fn rejects_dead_lettered_payout() {
+        assert_eq!(
+            validate_settle_transition("paid", "dead_lettered", "abc123"),
+            Err(SettleError::PayoutAlreadyTerminal {
+                actual: "dead_lettered".to_string()
+            })
+        );
     }
 
     // ── validate_settle_transition ───────────────────────────────────────────

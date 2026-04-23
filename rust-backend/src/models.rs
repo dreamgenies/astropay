@@ -102,6 +102,35 @@ pub struct InvoiceRequest {
     pub amount_usd: f64,
 }
 
+#[derive(Clone, Serialize)]
+pub struct Payout {
+    pub id: Uuid,
+    pub invoice_id: Uuid,
+    pub merchant_id: Uuid,
+    pub destination_public_key: String,
+    pub amount_cents: i32,
+    pub asset_code: String,
+    pub asset_issuer: String,
+    pub status: String,
+    pub transaction_hash: Option<String>,
+    pub failure_reason: Option<String>,
+    pub failure_count: i32,
+    pub last_failure_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PayoutDeadLetter {
+    pub id: Uuid,
+    pub payout_id: Uuid,
+    pub invoice_id: Uuid,
+    pub merchant_id: Uuid,
+    pub failure_count: i32,
+    pub last_failure_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Deserialize)]
 pub struct StellarWebhookRequest {
     #[serde(rename = "publicId")]
@@ -160,6 +189,41 @@ impl Invoice {
             metadata: row.get("metadata"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+        }
+    }
+}
+
+impl Payout {
+    pub fn from_row(row: &Row) -> Self {
+        Self {
+            id: row.get("id"),
+            invoice_id: row.get("invoice_id"),
+            merchant_id: row.get("merchant_id"),
+            destination_public_key: row.get("destination_public_key"),
+            amount_cents: row.get("amount_cents"),
+            asset_code: row.get("asset_code"),
+            asset_issuer: row.get("asset_issuer"),
+            status: row.get("status"),
+            transaction_hash: row.get("transaction_hash"),
+            failure_reason: row.get("failure_reason"),
+            failure_count: row.get("failure_count"),
+            last_failure_at: row.get("last_failure_at"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        }
+    }
+}
+
+impl PayoutDeadLetter {
+    pub fn from_row(row: &Row) -> Self {
+        Self {
+            id: row.get("id"),
+            payout_id: row.get("payout_id"),
+            invoice_id: row.get("invoice_id"),
+            merchant_id: row.get("merchant_id"),
+            failure_count: row.get("failure_count"),
+            last_failure_reason: row.get("last_failure_reason"),
+            created_at: row.get("created_at"),
         }
     }
 }

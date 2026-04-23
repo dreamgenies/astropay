@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, header},
+    http::HeaderMap,
 };
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -15,6 +15,9 @@ use crate::{
     models::Invoice,
     stellar::{find_payment_for_invoice, invoice_is_expired, is_valid_account_public_key},
 };
+
+/// Payouts that fail this many times are moved to the dead-letter path.
+const PAYOUT_DEAD_LETTER_THRESHOLD: i32 = 5;
 
 pub async fn reconcile(
     State(state): State<AppState>,
@@ -71,10 +74,9 @@ pub async fn reconcile(
                     .await?;
                 let settlement_key: Option<String> = settlement_row.map(|row| row.get(0));
                 let settlement_key = settlement_key.unwrap_or_default();
-                let (payout_queued, payout_skip_reason) = if !is_valid_account_public_key(
-                    &settlement_key,
-                ) {
-                    transaction
+                let (payout_queued, payout_skip_reason) =
+                    if !is_valid_account_public_key(&settlement_key) {
+                        transaction
                             .execute(
                                 "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
                                 &[
@@ -84,9 +86,9 @@ pub async fn reconcile(
                                 ],
                             )
                             .await?;
-                    (false, Some("invalid_settlement_public_key"))
-                } else {
-                    let inserted = transaction
+                        (false, Some("invalid_settlement_public_key"))
+                    } else {
+                        let inserted = transaction
                             .execute(
                                 "INSERT INTO payouts (invoice_id, merchant_id, destination_public_key, amount_cents, asset_code, asset_issuer)
                                  SELECT id, merchant_id, (SELECT settlement_public_key FROM merchants WHERE merchants.id = invoices.merchant_id),
@@ -96,12 +98,12 @@ pub async fn reconcile(
                                 &[&invoice.id],
                             )
                             .await?;
-                    if inserted > 0 {
-                        (true, None)
-                    } else {
-                        (false, Some("payout_already_queued"))
-                    }
-                };
+                        if inserted > 0 {
+                            (true, None)
+                        } else {
+                            (false, Some("payout_already_queued"))
+                        }
+                    };
                 transaction.commit().await?;
                 results.push(json!({
                     "publicId": invoice.public_id,
@@ -136,73 +138,115 @@ pub async fn reconcile(
     Ok(Json(body))
 }
 
+/// Scans `payouts` with status `failed` and increments their failure count.
+/// Once a payout reaches [`PAYOUT_DEAD_LETTER_THRESHOLD`] failures it is moved
+/// to `dead_lettered` status and a row is inserted into `payout_dead_letters`
+/// so operators can inspect and manually resolve it.
+///
+/// Full Stellar transaction signing/submission is not implemented yet; this
+/// handler only manages the failure-tracking and dead-letter escalation path.
 pub async fn settle(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     authorize_cron_request(&state.config.cron_secret, &headers)?;
-    Err(AppError::not_implemented(
-        "Rust settlement execution is not implemented yet. Port the Stellar transaction signing/submission path before claiming payout parity.",
-    ))
-}
+    let mut client = state.pool.get().await?;
 
-#[cfg(test)]
-mod tests {
-    use axum::http::{HeaderMap, HeaderValue, header};
+    // Fetch payouts that have failed and are not yet dead-lettered.
+    let rows = client
+        .query(
+            "SELECT * FROM payouts WHERE status = 'failed' ORDER BY updated_at ASC LIMIT 100",
+            &[],
+        )
+        .await?;
 
-    use crate::auth::authorize_cron_request;
-fn authorize_cron(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
-    authorize_cron_secret(state.config.cron_secret.as_str(), headers)
-}
+    let mut dead_lettered: Vec<Value> = Vec::new();
+    let mut requeued: Vec<Value> = Vec::new();
 
-fn authorize_cron_secret(secret: &str, headers: &HeaderMap) -> Result<(), AppError> {
-    if secret.is_empty() {
-        return Err(AppError::unauthorized("Unauthorized".to_string()));
+    for row in &rows {
+        let payout_id: uuid::Uuid = row.get("id");
+        let invoice_id: uuid::Uuid = row.get("invoice_id");
+        let merchant_id: uuid::Uuid = row.get("merchant_id");
+        let failure_count: i32 = row.get("failure_count");
+        let failure_reason: Option<String> = row.get("failure_reason");
+        let new_count = failure_count + 1;
+
+        let tx = client.transaction().await?;
+
+        if new_count >= PAYOUT_DEAD_LETTER_THRESHOLD {
+            // Escalate to dead-letter.
+            tx.execute(
+                "UPDATE payouts
+                 SET status = 'dead_lettered', failure_count = $2, last_failure_at = NOW(), updated_at = NOW()
+                 WHERE id = $1",
+                &[&payout_id, &new_count],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO payout_dead_letters (payout_id, invoice_id, merchant_id, failure_count, last_failure_reason)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (payout_id) DO NOTHING",
+                &[
+                    &payout_id,
+                    &invoice_id,
+                    &merchant_id,
+                    &new_count,
+                    &failure_reason,
+                ],
+            )
+            .await?;
+            tx.execute(
+                "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
+                &[
+                    &invoice_id,
+                    &"payout_dead_lettered",
+                    &json!({ "payoutId": payout_id, "failureCount": new_count }),
+                ],
+            )
+            .await?;
+            tx.commit().await?;
+            dead_lettered.push(json!({ "payoutId": payout_id, "failureCount": new_count }));
+        } else {
+            // Increment failure count and requeue for the next settle run.
+            tx.execute(
+                "UPDATE payouts
+                 SET status = 'queued', failure_count = $2, last_failure_at = NOW(), updated_at = NOW()
+                 WHERE id = $1",
+                &[&payout_id, &new_count],
+            )
+            .await?;
+            tx.commit().await?;
+            requeued.push(json!({ "payoutId": payout_id, "failureCount": new_count }));
+        }
     }
-#[cfg(test)]
-mod tests {
-    use axum::http::{HeaderMap, HeaderValue, header};
 
-    use crate::auth::authorize_cron_request;
-    authorize_cron(&state, &headers)?;
-    let msg = "Rust settlement execution is not implemented yet. Port the Stellar transaction signing/submission path before claiming payout parity.";
-    let client = state.pool.get().await?;
+    let body = json!({
+        "deadLettered": dead_lettered.len(),
+        "requeued": requeued.len(),
+        "deadLetteredItems": dead_lettered,
+        "requeuedItems": requeued,
+        "note": "Stellar transaction signing/submission is not implemented yet. This run only manages dead-letter escalation."
+    });
+
     if let Err(e) = client
         .execute(
             "INSERT INTO cron_runs (job_type, started_at, finished_at, success, metadata, error_detail)
-             VALUES ('settle', NOW(), NOW(), false, '{}'::jsonb, $1)",
-            &[&msg],
+             VALUES ('settle', NOW(), NOW(), true, $1, NULL)",
+            &[&PgJson(&body)],
         )
         .await
     {
         warn!(error = %e, "cron_runs audit insert failed for settle");
     }
-    Err(AppError::not_implemented(msg))
-}
 
-fn authorize_cron_secret(cron_secret: &str, headers: &HeaderMap) -> Result<(), AppError> {
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if token == Some(secret) {
-    if token == Some(cron_secret) {
-        Ok(())
-    } else {
-        Err(AppError::unauthorized("Unauthorized".to_string()))
-    }
-}
-
-fn authorize_cron(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
-    authorize_cron_secret(state.config.cron_secret.as_str(), headers)
+    Ok(Json(body))
 }
 
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
-    use axum::http::{HeaderMap, HeaderValue};
 
-    use super::authorize_cron_secret;
+    use crate::auth::authorize_cron_request;
 
     #[test]
     fn authorizes_valid_bearer_token() {
@@ -212,13 +256,36 @@ mod tests {
             HeaderValue::from_static("Bearer cron_secret"),
         );
         assert!(authorize_cron_request("cron_secret", &headers).is_ok());
-        assert!(authorize_cron_secret("cron_secret", &headers).is_ok());
     }
 
     #[test]
     fn rejects_missing_bearer_token() {
         let headers = HeaderMap::new();
         assert!(authorize_cron_request("cron_secret", &headers).is_err());
-        assert!(authorize_cron_secret("cron_secret", &headers).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong"),
+        );
+        assert!(authorize_cron_request("cron_secret", &headers).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_configured_secret() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer anything"),
+        );
+        assert!(authorize_cron_request("", &headers).is_err());
+    }
+
+    #[test]
+    fn dead_letter_threshold_is_five() {
+        assert_eq!(super::PAYOUT_DEAD_LETTER_THRESHOLD, 5);
     }
 }

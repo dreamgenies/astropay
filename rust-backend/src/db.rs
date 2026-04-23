@@ -3,6 +3,9 @@
 //! **Cron audit** — table `cron_runs` (see migration `004_cron_runs.sql`) stores one row per
 //! reconcile/settle HTTP run with JSONB `metadata` matching the response summary. Application
 //! code should not fail the cron HTTP response if an audit insert fails; log and continue.
+//! **Dead-letter** — `payout_dead_letters` (see migration `005_payout_dead_letter.sql`) holds
+//! payouts that have failed [`crate::handlers::cron::PAYOUT_DEAD_LETTER_THRESHOLD`] times.
+//! Operators must resolve these manually; no automatic retry is attempted once dead-lettered.
 //! **Invoice `metadata` (JSONB)** — today the API stores a small opaque object and does not
 //! filter on it in SQL. Do not add JSONB indexes until a real `WHERE` / `ORDER BY` / `JOIN`
 //! pattern lands in application code; see `../usdc-payment-link-tool/migrations/003_invoice_metadata_jsonb_index_plan.sql`
@@ -35,6 +38,16 @@ pub fn create_pool(config: &Config) -> anyhow::Result<Pool> {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn payout_dead_letter_migration_defines_table_and_indexes() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/005_payout_dead_letter.sql");
+        let sql = std::fs::read_to_string(path).expect("read 005_payout_dead_letter.sql");
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS payout_dead_letters"));
+        assert!(sql.contains("failure_count"));
+        assert!(sql.contains("payout_dead_letters_merchant_id_idx"));
+    }
 
     #[test]
     fn cron_runs_migration_defines_audit_table() {
