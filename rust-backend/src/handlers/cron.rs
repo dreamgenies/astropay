@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::HeaderMap,
 };
 use chrono::Utc;
@@ -14,11 +14,19 @@ use crate::{
     auth::authorize_cron_request,
     error::AppError,
     models::Invoice,
-    stellar::{find_payment_for_invoice, invoice_is_expired, is_valid_account_public_key},
+    stellar::{PaymentScanResult, find_payment_for_invoice, invoice_is_expired, is_valid_account_public_key},
 };
 
 /// Payouts that fail this many times are moved to the dead-letter path.
 const PAYOUT_DEAD_LETTER_THRESHOLD: i32 = 5;
+/// Default number of queued payouts processed per settle run. Override with `SETTLE_BATCH_SIZE` env var.
+const DEFAULT_SETTLE_BATCH_SIZE: i64 = 50;
+
+#[derive(Deserialize)]
+pub struct DryRunParams {
+    #[serde(default)]
+    dry_run: bool,
+}
 
 pub async fn reconcile(
     State(state): State<AppState>,
@@ -52,7 +60,35 @@ pub async fn reconcile(
         }
 
         match find_payment_for_invoice(&state.config, &invoice).await? {
-            Some(payment) => {
+            PaymentScanResult::AssetMismatch(mismatch) => {
+                if !dry_run {
+                    client
+                        .execute(
+                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
+                            &[
+                                &invoice.id,
+                                &"payment_asset_mismatch",
+                                &json!({
+                                    "hash": mismatch.hash,
+                                    "receivedAssetCode": mismatch.received_asset_code,
+                                    "receivedAssetIssuer": mismatch.received_asset_issuer,
+                                    "expectedAssetCode": mismatch.expected_asset_code,
+                                    "expectedAssetIssuer": mismatch.expected_asset_issuer,
+                                    "amount": mismatch.amount,
+                                }),
+                            ],
+                        )
+                        .await?;
+                }
+                results.push(json!({
+                    "publicId": invoice.public_id,
+                    "action": "asset_mismatch",
+                    "hash": mismatch.hash,
+                    "receivedAssetCode": mismatch.received_asset_code,
+                    "expectedAssetCode": mismatch.expected_asset_code,
+                }));
+            }
+            PaymentScanResult::Match(payment) => {
                 let transaction = client.transaction().await?;
                 transaction
                     .execute(
@@ -119,7 +155,7 @@ pub async fn reconcile(
                     "payoutSkipReason": payout_skip_reason
                 }));
             }
-            None => {
+            PaymentScanResult::NotFound => {
                 results.push(json!({ "publicId": invoice.public_id, "action": "pending" }));
             }
         }
@@ -186,12 +222,17 @@ pub async fn settle(
 ) -> Result<Json<Value>, AppError> {
     authorize_cron_request(&state.config.cron_secret, &headers)?;
     let mut client = state.pool.get().await?;
+    let batch_size = std::env::var("SETTLE_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_SETTLE_BATCH_SIZE)
+        .max(1);
 
     // Fetch payouts that have failed and are not yet dead-lettered.
     let rows = client
         .query(
-            "SELECT * FROM payouts WHERE status = 'failed' ORDER BY updated_at ASC LIMIT 100",
-            &[],
+            "SELECT * FROM payouts WHERE status = 'failed' ORDER BY updated_at ASC LIMIT $1",
+            &[&batch_size],
         )
         .await?;
 
@@ -256,6 +297,7 @@ pub async fn settle(
     }
 
     let body = json!({
+        "batchSize": batch_size,
         "deadLettered": dead_lettered.len(),
         "requeued": requeued.len(),
         "deadLetteredItems": dead_lettered,
@@ -322,5 +364,10 @@ mod tests {
     #[test]
     fn dead_letter_threshold_is_five() {
         assert_eq!(super::PAYOUT_DEAD_LETTER_THRESHOLD, 5);
+    }
+
+    #[test]
+    fn default_settle_batch_size_is_fifty() {
+        assert_eq!(super::DEFAULT_SETTLE_BATCH_SIZE, 50);
     }
 }

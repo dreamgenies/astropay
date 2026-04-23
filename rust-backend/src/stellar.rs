@@ -5,6 +5,18 @@ use stellar_strkey::ed25519::PublicKey as Ed25519PublicKey;
 
 use crate::{config::Config, error::AppError, models::Invoice};
 
+/// Maximum bytes for a Stellar text memo (protocol limit).
+pub const SETTLEMENT_MEMO_MAX_BYTES: usize = 28;
+
+/// Builds a deterministic settlement memo: `s:<public_id>` truncated to 28 bytes.
+/// The `s:` prefix distinguishes settlement transactions from buyer payment memos (`astro_*`).
+pub fn build_settlement_memo(public_id: &str) -> String {
+    format!("s:{}", public_id)
+        .chars()
+        .take(SETTLEMENT_MEMO_MAX_BYTES)
+        .collect()
+}
+
 /// Returns true when `value` is a well-formed Stellar Ed25519 account strkey (checksum-valid `G...`).
 pub fn is_valid_account_public_key(value: &str) -> bool {
     Ed25519PublicKey::from_string(value).is_ok()
@@ -15,6 +27,24 @@ pub struct PaymentMatch {
     pub hash: String,
     pub payment: serde_json::Value,
     pub memo: String,
+}
+
+/// Emitted when a payment's amount matches an invoice but the asset differs.
+#[derive(Debug, Clone)]
+pub struct AssetMismatch {
+    pub hash: String,
+    pub received_asset_code: String,
+    pub received_asset_issuer: String,
+    pub expected_asset_code: String,
+    pub expected_asset_issuer: String,
+    pub amount: String,
+}
+
+/// Result of scanning Horizon payments for an invoice.
+pub enum PaymentScanResult {
+    Match(PaymentMatch),
+    AssetMismatch(AssetMismatch),
+    NotFound,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,7 +118,7 @@ pub fn payment_matches_invoice(record: &serde_json::Value, memo: &str, invoice: 
 pub async fn find_payment_for_invoice(
     config: &Config,
     invoice: &Invoice,
-) -> Result<Option<PaymentMatch>, AppError> {
+) -> Result<PaymentScanResult, AppError> {
     let payments_url = format!(
         "{}/accounts/{}/payments?order=desc&limit=50",
         config.horizon_url.trim_end_matches('/'),
@@ -106,6 +136,8 @@ pub async fn find_payment_for_invoice(
         .await
         .map_err(|_| AppError::Internal)?;
 
+    let expected_amount = invoice_amount_to_asset(invoice);
+
     for record in page.embedded.records {
         if record.record_type != "payment" {
             continue;
@@ -115,13 +147,23 @@ pub async fn find_payment_for_invoice(
         {
             continue;
         }
-        if record.asset_code.as_deref() != Some(invoice.asset_code.as_str()) {
-            continue;
+
+        let amount_matches = record.amount.as_deref() == Some(expected_amount.as_str());
+        let asset_matches = record.asset_code.as_deref() == Some(invoice.asset_code.as_str())
+            && record.asset_issuer.as_deref() == Some(invoice.asset_issuer.as_str());
+
+        if amount_matches && !asset_matches {
+            return Ok(PaymentScanResult::AssetMismatch(AssetMismatch {
+                hash: record.transaction_hash,
+                received_asset_code: record.asset_code.unwrap_or_default(),
+                received_asset_issuer: record.asset_issuer.unwrap_or_default(),
+                expected_asset_code: invoice.asset_code.clone(),
+                expected_asset_issuer: invoice.asset_issuer.clone(),
+                amount: expected_amount.clone(),
+            }));
         }
-        if record.asset_issuer.as_deref() != Some(invoice.asset_issuer.as_str()) {
-            continue;
-        }
-        if record.amount.as_deref() != Some(invoice_amount_to_asset(invoice).as_str()) {
+
+        if !amount_matches || !asset_matches {
             continue;
         }
 
@@ -142,7 +184,7 @@ pub async fn find_payment_for_invoice(
             .map_err(|_| AppError::Internal)?;
 
         if payment_matches_invoice(&record.raw, &tx.memo, invoice) {
-            return Ok(Some(PaymentMatch {
+            return Ok(PaymentScanResult::Match(PaymentMatch {
                 hash: record.transaction_hash,
                 payment: record.raw,
                 memo: tx.memo,
@@ -150,7 +192,7 @@ pub async fn find_payment_for_invoice(
         }
     }
 
-    Ok(None)
+    Ok(PaymentScanResult::NotFound)
 }
 
 pub fn invoice_is_expired(invoice: &Invoice, now: DateTime<Utc>) -> bool {
@@ -295,6 +337,29 @@ mod tests {
             "amount": "12.50"
         });
         assert!(payment_matches_invoice(&record, "astro_deadbeef", &invoice));
+    }
+
+    // --- Issue #157: settlement memo strategy ---
+
+    #[test]
+    fn settlement_memo_has_s_prefix() {
+        let memo = super::build_settlement_memo("inv_abc123");
+        assert!(memo.starts_with("s:"));
+        assert_eq!(memo, "s:inv_abc123");
+    }
+
+    #[test]
+    fn settlement_memo_truncates_to_28_chars() {
+        let long_id = "a".repeat(40);
+        let memo = super::build_settlement_memo(&long_id);
+        assert_eq!(memo.len(), super::SETTLEMENT_MEMO_MAX_BYTES);
+    }
+
+    #[test]
+    fn settlement_memo_short_id_is_not_truncated() {
+        let memo = super::build_settlement_memo("inv_short");
+        assert_eq!(memo, "s:inv_short");
+        assert!(memo.len() <= super::SETTLEMENT_MEMO_MAX_BYTES);
     }
 
     #[test]

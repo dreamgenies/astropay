@@ -20,6 +20,8 @@ export const env = {
   platformFeeBps: Number(get('PLATFORM_FEE_BPS', '100')),
   invoiceExpiryHours: Number(get('INVOICE_EXPIRY_HOURS', '24')),
   cronSecret: get('CRON_SECRET', ''),
+  /** Max payouts processed per settle cron run. Defaults to 50. */
+  settleBatchSize: Number(get('SETTLE_BATCH_SIZE', '50')),
   nextPublicStellarNetwork: get('NEXT_PUBLIC_STELLAR_NETWORK', get('STELLAR_NETWORK', 'TESTNET')),
 };
 

@@ -4,6 +4,7 @@ import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 import type { Invoice, Merchant } from '@/lib/types';
+import type { AssetMismatch } from '@/lib/stellar';
 
 export type MarkInvoicePaidPayoutResult = {
   payoutQueued: boolean;
@@ -163,11 +164,12 @@ export const pendingInvoices = async () => {
   return result.rows;
 };
 
-export const queuedPayouts = async () => {
+export const queuedPayouts = async (limit = 50) => {
   const result = await query<any>(
     `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents, invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
      FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
-     WHERE payouts.status IN ('queued','failed') ORDER BY payouts.created_at ASC LIMIT 50`,
+     WHERE payouts.status IN ('queued','failed') ORDER BY payouts.created_at ASC LIMIT $1`,
+    [limit],
   );
   return result.rows;
 };
@@ -188,6 +190,14 @@ export const markPayoutFailed = async (payoutId: string, reason: string) => {
   await query(`UPDATE payouts SET status = 'failed', failure_reason = $2, updated_at = NOW() WHERE id = $1`, [payoutId, reason.slice(0, 500)]);
 };
 
+export const recordAssetMismatch = async (invoiceId: string, mismatch: AssetMismatch) => {
+  await query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
+    invoiceId,
+    'payment_asset_mismatch',
+    JSON.stringify(mismatch),
+  ]);
+};
+
 /** Persists a reconcile/settle cron run for ops and debugging. Swallows DB errors so cron HTTP behavior is unchanged. */
 export const recordCronRun = async ({
   jobType,
@@ -195,7 +205,7 @@ export const recordCronRun = async ({
   metadata,
   errorDetail,
 }: {
-  jobType: 'reconcile' | 'settle';
+  jobType: 'reconcile' | 'settle' | 'purge_sessions';
   success: boolean;
   metadata: Record<string, unknown>;
   errorDetail?: string | null;
