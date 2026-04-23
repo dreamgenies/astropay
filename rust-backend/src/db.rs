@@ -22,6 +22,9 @@
 //! `006_invoice_dashboard_index.sql`) is a composite `(merchant_id, created_at DESC, id)` index
 //! that satisfies the equality filter + ORDER BY in a single index scan. The trailing `id` column
 //! supports stable keyset pagination. See the migration comment for measured query plan timings.
+//! **Invoice amount integrity** — migration `008_invoice_amount_check.sql` adds a CHECK constraint
+//! `invoices_amount_split_check` enforcing `gross_amount_cents = platform_fee_cents + net_amount_cents`.
+//! The database will reject any INSERT or UPDATE that violates this invariant.
 
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use tokio_postgres::Config as PgConfig;
@@ -124,6 +127,25 @@ mod tests {
                 "003 must not create speculative metadata indexes: {t}"
             );
         }
+    }
+
+    #[test]
+    fn invoice_amount_split_migration_defines_check_constraint() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/008_invoice_amount_check.sql");
+        let sql = std::fs::read_to_string(path).expect("read 008_invoice_amount_check.sql");
+        assert!(
+            sql.contains("invoices_amount_split_check"),
+            "migration must name the check constraint invoices_amount_split_check"
+        );
+        assert!(
+            sql.contains("gross_amount_cents = platform_fee_cents + net_amount_cents"),
+            "constraint must enforce gross = fee + net"
+        );
+        assert!(
+            sql.contains("ALTER TABLE invoices"),
+            "migration must alter the invoices table"
+        );
     }
 
     #[test]
