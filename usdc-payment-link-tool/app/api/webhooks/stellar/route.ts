@@ -1,6 +1,6 @@
 import { fail, ok } from '@/lib/http';
 import { env } from '@/lib/env';
-import { getInvoiceByPublicId, markInvoicePaid } from '@/lib/data';
+import { getInvoiceByPublicId, markInvoicePaid, type MarkInvoicePaidPayoutResult } from '@/lib/data';
 
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
@@ -16,8 +16,17 @@ export async function POST(request: Request) {
   if (!publicId || !transactionHash) return fail('publicId and transactionHash are required');
   const invoice = await getInvoiceByPublicId(publicId);
   if (!invoice) return fail('Invoice not found', 404);
+  let payout: MarkInvoicePaidPayoutResult | undefined;
   if (invoice.status === 'pending') {
-    await markInvoicePaid({ invoiceId: invoice.id, transactionHash, payload: body });
+    payout = await markInvoicePaid({ invoiceId: invoice.id, transactionHash, payload: body });
   }
-  return ok({ received: true, invoiceId: invoice.id, status: invoice.status });
+  return ok({
+    received: true,
+    invoiceId: invoice.id,
+    status: invoice.status,
+    ...(payout && {
+      payoutQueued: payout.payoutQueued,
+      payoutSkipReason: payout.payoutSkipReason,
+    }),
+  });
 }

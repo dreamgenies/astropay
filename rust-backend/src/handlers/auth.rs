@@ -10,6 +10,7 @@ use crate::{
     },
     error::AppError,
     models::{LoginRequest, RegisterRequest},
+    stellar::is_valid_account_public_key,
 };
 
 pub async fn register(
@@ -118,14 +119,10 @@ fn validate_register(payload: &RegisterRequest) -> Result<(), AppError> {
         || payload.password.len() < 8
         || payload.business_name.len() < 2
         || payload.business_name.len() > 120
-        || !is_public_key(&payload.stellar_public_key)
-        || !is_public_key(&payload.settlement_public_key)
+        || !is_valid_account_public_key(&payload.stellar_public_key)
+        || !is_valid_account_public_key(&payload.settlement_public_key)
     {
         return Err(AppError::bad_request("Invalid payload"));
     }
     Ok(())
-}
-
-fn is_public_key(value: &str) -> bool {
-    value.starts_with('G') && value.len() == 56
 }

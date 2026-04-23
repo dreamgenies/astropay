@@ -42,10 +42,14 @@ This is the only honest way to implement fee-splitting without lying to yourself
 Stores merchant identity and settlement wallet.
 
 ### sessions
-Stores long-lived merchant sessions.
+Stores long-lived merchant sessions (JWT references `sessions.id`). Auth checks use the row’s primary key plus `expires_at > NOW()`.
+
+Indexes evolve across migrations: `001_init.sql` creates starter btree indexes; **`002_session_expiry_indexes.sql`** replaces them with `(expires_at, id)` for global expiry sweeps and `(merchant_id, expires_at)` for merchant-scoped cleanup (the latter’s left prefix still supports `WHERE merchant_id = $1` alone). Run `npm run db:migrate` or `cargo run --bin migrate` from `rust-backend` so 002 is applied in production.
 
 ### invoices
 Stores hosted invoice details and lifecycle state.
+
+**`metadata` (JSONB)** — arbitrary key/value data for integrations. Today nothing in this repo filters invoices in SQL by `metadata`; default rows use a small object (for example `{"product":"ASTROpay"}`). Migration **`003_invoice_metadata_jsonb_index_plan.sql`** documents when to add expression indexes vs `GIN (metadata jsonb_path_ops)` vs key-specific btree indexes, and installs a `COMMENT ON COLUMN` pointer for operators. **Do not add JSONB indexes preemptively** (write amplification and unused GIN are common pitfalls); add a migration alongside the first real `WHERE metadata …` query.
 
 ### payment_events
 Append-only audit trail for payment and settlement events.
@@ -158,6 +162,14 @@ Those still need a proper Stellar transaction port and currently return `501 Not
 - `GET /api/cron/settle`
 - `POST /api/webhooks/stellar`
 
+When an invoice is marked paid, the server validates the merchant `settlement_public_key` as a Stellar Ed25519 account strkey (checksum-valid `G...`) before inserting a `payouts` row. If the key is missing or invalid, the invoice still becomes paid (funds were received on-chain), but no payout is queued; a `payment_events` row is written with `event_type = payout_skipped_invalid_destination` instead.
+
+Successful reconcile entries for paid invoices include `payoutQueued` (boolean) and `payoutSkipReason` (`null`, `invalid_settlement_public_key`, or `payout_already_queued` when the payout row already existed). The Stellar webhook response includes the same `payoutQueued` / `payoutSkipReason` fields when it transitions an invoice from `pending` to `paid`.
+
+The settlement cron rejects queued payouts whose stored `destination_public_key` fails the same validation and marks them failed so they are not submitted to Horizon.
+
+**Verification:** `cd rust-backend && cargo test` runs StrKey validation unit tests. `cd usdc-payment-link-tool && npm run typecheck` checks the TypeScript integration.
+
 ## Vercel deployment
 
 1. Push the repo to GitHub.
@@ -189,6 +201,7 @@ Because of that last point, Railway or another worker-friendly host is usually b
 - Passwords are hashed with Node `crypto.scrypt`.
 - Cron and webhook endpoints require `Authorization: Bearer <CRON_SECRET>`.
 - The client never gets to declare an invoice paid.
+- Merchant registration rejects malformed Stellar keys; payout destinations are validated again when payouts are queued so bad data cannot create settlement jobs.
 - Production treasury secrets must remain server-only.
 
 ## Operational caveats

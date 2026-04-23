@@ -1,11 +1,18 @@
 import { z } from 'zod';
 
+import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
+
+const stellarAccountId = z
+  .string()
+  .trim()
+  .refine((v) => isValidSettlementPublicKey(v), { message: 'Invalid Stellar public key' });
+
 export const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   businessName: z.string().min(2).max(120),
-  stellarPublicKey: z.string().startsWith('G').min(56).max(56),
-  settlementPublicKey: z.string().startsWith('G').min(56).max(56),
+  stellarPublicKey: stellarAccountId,
+  settlementPublicKey: stellarAccountId,
 });
 
 export const loginSchema = z.object({

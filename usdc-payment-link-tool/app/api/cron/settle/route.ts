@@ -2,6 +2,8 @@ import { fail, ok } from '@/lib/http';
 import { assertSettlementConfig, env } from '@/lib/env';
 import { buildSettlementXdr, getServer } from '@/lib/stellar';
 import { getInvoiceById, markPayoutFailed, markPayoutSettled, markPayoutSubmitted, queuedPayouts, recordCronRun } from '@/lib/data';
+import { getInvoiceById, markPayoutFailed, markPayoutSettled, markPayoutSubmitted, queuedPayouts } from '@/lib/data';
+import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
@@ -34,6 +36,25 @@ export async function GET(request: Request) {
         await markPayoutFailed(payout.id, message);
         results.push({ payoutId: payout.id, action: 'failed', reason: message });
       }
+  for (const payout of payouts) {
+    if (!isValidSettlementPublicKey(payout.destination_public_key)) {
+      const reason = 'Invalid destination stellar public key';
+      await markPayoutFailed(payout.id, reason);
+      results.push({ payoutId: payout.id, action: 'failed', reason });
+      continue;
+    }
+    try {
+      const invoice = await getInvoiceById(payout.invoice_id_ref);
+      if (!invoice || invoice.status !== 'paid') continue;
+      const tx = await buildSettlementXdr({ invoice, destination: payout.destination_public_key });
+      const submission = await getServer().submitTransaction(tx);
+      await markPayoutSubmitted(payout.id, submission.hash);
+      await markPayoutSettled(payout.id, payout.invoice_id_ref, submission.hash);
+      results.push({ payoutId: payout.id, action: 'settled', txHash: submission.hash });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Settlement failed';
+      await markPayoutFailed(payout.id, message);
+      results.push({ payoutId: payout.id, action: 'failed', reason: message });
     }
 
     return ok({ processed, results });

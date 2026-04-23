@@ -2,7 +2,13 @@ import { query, withTransaction } from '@/db';
 import { env } from '@/lib/env';
 import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
+import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 import type { Invoice, Merchant } from '@/lib/types';
+
+export type MarkInvoicePaidPayoutResult = {
+  payoutQueued: boolean;
+  payoutSkipReason: 'invalid_settlement_public_key' | 'payout_already_queued' | null;
+};
 
 export const findMerchantByEmail = async (email: string) => {
   const result = await query<(Merchant & { password_hash: string })>(
@@ -102,22 +108,49 @@ export const markInvoicePaid = async ({ invoiceId, transactionHash, payload }: {
   invoiceId: string;
   transactionHash: string;
   payload: Record<string, unknown>;
-}) => {
-  await withTransaction(async (client) => {
-    await client.query(
+}): Promise<MarkInvoicePaidPayoutResult> => {
+  return withTransaction(async (client) => {
+    const updated = await client.query(
       `UPDATE invoices
        SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
        WHERE id = $1 AND status = 'pending'`,
       [invoiceId, transactionHash],
     );
+    if (updated.rowCount === 0) {
+      return { payoutQueued: false, payoutSkipReason: null };
+    }
+
     await client.query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [invoiceId, 'payment_detected', payload]);
-    await client.query(
+
+    const settlement = await client.query<{ settlement_public_key: string }>(
+      `SELECT m.settlement_public_key
+       FROM merchants m
+       INNER JOIN invoices i ON i.merchant_id = m.id
+       WHERE i.id = $1`,
+      [invoiceId],
+    );
+    const settlementKey = settlement.rows[0]?.settlement_public_key ?? '';
+
+    if (!isValidSettlementPublicKey(settlementKey)) {
+      await client.query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
+        invoiceId,
+        'payout_skipped_invalid_destination',
+        { reason: 'invalid_settlement_public_key' },
+      ]);
+      return { payoutQueued: false, payoutSkipReason: 'invalid_settlement_public_key' };
+    }
+
+    const ins = await client.query(
       `INSERT INTO payouts (invoice_id, merchant_id, destination_public_key, amount_cents, asset_code, asset_issuer)
        SELECT id, merchant_id, (SELECT settlement_public_key FROM merchants WHERE merchants.id = invoices.merchant_id), net_amount_cents, asset_code, asset_issuer
        FROM invoices WHERE id = $1
        ON CONFLICT (invoice_id) DO NOTHING`,
       [invoiceId],
     );
+    if ((ins.rowCount ?? 0) > 0) {
+      return { payoutQueued: true, payoutSkipReason: null };
+    }
+    return { payoutQueued: false, payoutSkipReason: 'payout_already_queued' };
   });
 };
 

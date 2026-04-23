@@ -17,6 +17,7 @@ CREATE TABLE sessions (
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Initial indexes; migration 002_session_expiry_indexes.sql refines these for expiry batching and merchant+expiry filters.
 CREATE INDEX sessions_merchant_id_idx ON sessions (merchant_id);
 CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
 
@@ -42,6 +43,7 @@ CREATE TABLE invoices (
   settlement_hash TEXT,
   checkout_url TEXT,
   qr_data_url TEXT,
+  -- JSONB: indexing strategy is documented in 003_invoice_metadata_jsonb_index_plan.sql (no automatic GIN).
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

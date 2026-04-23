@@ -1,8 +1,14 @@
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Deserialize;
+use stellar_strkey::ed25519::PublicKey as Ed25519PublicKey;
 
 use crate::{config::Config, error::AppError, models::Invoice};
+
+/// Returns true when `value` is a well-formed Stellar Ed25519 account strkey (checksum-valid `G...`).
+pub fn is_valid_account_public_key(value: &str) -> bool {
+    Ed25519PublicKey::from_string(value).is_ok()
+}
 
 #[derive(Debug, Clone)]
 pub struct PaymentMatch {
@@ -158,7 +164,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        build_checkout_url, invoice_amount_to_asset, invoice_is_expired, payment_matches_invoice,
+        build_checkout_url, invoice_amount_to_asset, invoice_is_expired,
+        is_valid_account_public_key, payment_matches_invoice,
     };
     use crate::{config::Config, models::Invoice};
 
@@ -284,5 +291,25 @@ mod tests {
             "amount": "12.50"
         });
         assert!(payment_matches_invoice(&record, "astro_deadbeef", &invoice));
+    }
+
+    #[test]
+    fn accepts_valid_ed25519_account_strkey() {
+        assert!(is_valid_account_public_key(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_account_strkeys() {
+        assert!(!is_valid_account_public_key(""));
+        assert!(!is_valid_account_public_key("   "));
+        assert!(!is_valid_account_public_key("not-a-key"));
+        assert!(!is_valid_account_public_key(
+            "MCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCAAAAAAM"
+        ));
+        assert!(!is_valid_account_public_key(
+            "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
+        ));
     }
 }

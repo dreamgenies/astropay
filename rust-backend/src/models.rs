@@ -1,6 +1,10 @@
 //! HTTP-facing models mapped from SQL rows.
 //!
 //! Cron HTTP responses are also summarized in the `cron_runs` audit table (see [`CronRun`]).
+//! **`Invoice.metadata`** is JSONB for extensibility. It is not used in SQL filters in the
+//! current codebase; indexing follows the plan in `../usdc-payment-link-tool/migrations/003_invoice_metadata_jsonb_index_plan.sql`.
+//! Merchant sessions are persisted in the `sessions` table (not represented as a struct here). Storage layout and indexes are defined under
+//! `../usdc-payment-link-tool/migrations/`; see [`crate::auth::current_merchant`] and [`crate::db`] for query assumptions.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -67,6 +71,7 @@ pub struct Invoice {
     pub settlement_hash: Option<String>,
     pub checkout_url: Option<String>,
     pub qr_data_url: Option<String>,
+    /// Opaque JSONB; add DB indexes only when queries filter on documented keys (see migrations).
     pub metadata: Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

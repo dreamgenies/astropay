@@ -81,6 +81,11 @@ pub fn clear_session_cookie(config: &Config) -> Cookie<'static> {
     cookie
 }
 
+/// Resolves the merchant for a signed session cookie.
+///
+/// The nested `EXISTS` probes `sessions` by **`id` (JWT `sid`)** and `merchant_id` (`sub`). PostgreSQL uses the session **primary key**
+/// for that probe; `expires_at > NOW()` is evaluated on the single fetched row. Bulk expiry deletes are a separate workload and rely on
+/// btree indexes on `expires_at` (see migrations `002_session_expiry_indexes.sql`).
 pub async fn current_merchant<C>(
     client: &C,
     config: &Config,

@@ -1,0 +1,34 @@
+-- =============================================================================
+-- Invoice metadata JSONB — indexing plan (no btree/jsonb indexes created here)
+-- =============================================================================
+-- Current application usage (verify before adding indexes):
+--   • Rust and Next invoice paths read/write `invoices.metadata` as opaque JSONB.
+--   • No SQL yet uses WHERE / ORDER BY / JOIN predicates on metadata keys.
+--   • Default payload is small, e.g. {"product":"ASTROpay"}.
+--
+-- Policy: do not CREATE INDEX on metadata until a concrete query exists in this
+-- repository or an approved runbook. Blind GIN(jsonb) indexes are write-expensive
+-- and often unused.
+--
+-- When you introduce a query, choose the smallest index that matches the shape:
+--
+--   1) Fixed key, equality or range on a scalar (text, number, timestamptz):
+--        CREATE INDEX ... ON invoices ((metadata->>'external_id'));
+--        or a partial index if the predicate is stable and selective:
+--        CREATE INDEX ... ON invoices (merchant_id) WHERE (metadata->>'source') = 'partner_x';
+--
+--   2) Containment / existence on variable paths (@>, ?, ?|, jsonpath):
+--        CREATE INDEX ... ON invoices USING gin (metadata jsonb_path_ops);
+--      Use jsonb_path_ops when operators are @>, @@, jsonpath; default gin(jsonb)
+--      when you need ? / ?| / ?& key-existence heavily.
+--
+--   3) Full-text style search inside JSON without a stable key:
+--      Prefer redesigning keys over indexing metadata::text with pg_trgm (large,
+--      noisy, high write cost).
+--
+-- After adding an index: document the query in README and keep EXPLAIN plans for
+-- regression. Consider CONCURRENTLY for production-only follow-up migrations.
+-- =============================================================================
+
+COMMENT ON COLUMN invoices.metadata IS
+'Extensible JSONB; no secondary indexes by default. See migration 003 comments and README before adding GIN or expression indexes for new filter paths.';
