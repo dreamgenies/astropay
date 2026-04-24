@@ -93,6 +93,7 @@ Contributor planning now lives in:
 
 - [docs/issue-backlog/astropay-250-issues.md](docs/issue-backlog/astropay-250-issues.md)
 - [docs/observability/invoice-payout-lifecycle-metrics-spec.md](docs/observability/invoice-payout-lifecycle-metrics-spec.md)
+- [docs/database/schema-ownership.md](docs/database/schema-ownership.md)
 - [.github/ISSUE_TEMPLATE/backlog-item.md](.github/ISSUE_TEMPLATE/backlog-item.md)
 - [scripts/publish_issue_backlog.py](scripts/publish_issue_backlog.py)
 
