@@ -4,12 +4,10 @@ import { buildSettlementXdr, getServer } from '@/lib/stellar';
 import {
   getInvoiceById,
   markPayoutFailed,
-  markPayoutSettled,
   markPayoutSubmitted,
   queuedPayouts,
   recordCronRun,
 } from '@/lib/data';
-import { getInvoiceById, markPayoutFailed, markPayoutSettled, markPayoutSubmitted, queuedPayouts, recordCronRun } from '@/lib/data';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 
 /** Default number of queued payouts processed per settle run. Override with SETTLE_BATCH_SIZE env var. */
@@ -39,35 +37,26 @@ export async function GET(request: Request) {
     for (const payout of payouts) {
       if (!isValidSettlementPublicKey(payout.destination_public_key)) {
         const reason = 'Invalid destination stellar public key';
-        await markPayoutFailed(payout.id, reason);
-        results.push({ payoutId: payout.id, action: 'failed', reason });
-        continue;
-      }
-
-      try {
-        const invoice = await getInvoiceById(payout.invoice_id_ref);
-        if (!invoice || invoice.status !== 'paid') continue;
-
-        const tx = await buildSettlementXdr({
-          invoice,
-          destination: payout.destination_public_key,
-        });
         if (!dryRun) await markPayoutFailed(payout.id, reason);
         results.push({ payoutId: payout.id, action: 'failed', reason });
         continue;
       }
+
       try {
         const invoice = await getInvoiceById(payout.invoice_id_ref);
         if (!invoice || invoice.status !== 'paid') continue;
+
         if (dryRun) {
-          results.push({ payoutId: payout.id, action: 'would_settle' });
+          results.push({ payoutId: payout.id, action: 'would_submit' });
           continue;
         }
+
         const tx = await buildSettlementXdr({ invoice, destination: payout.destination_public_key });
         const submission = await getServer().submitTransaction(tx);
+        // Mark as submitted only — the reconcile cron confirms settlement once
+        // the transaction is seen on-chain (AP-149).
         await markPayoutSubmitted(payout.id, submission.hash);
-        await markPayoutSettled(payout.id, payout.invoice_id_ref, submission.hash);
-        results.push({ payoutId: payout.id, action: 'settled', txHash: submission.hash });
+        results.push({ payoutId: payout.id, action: 'submitted', txHash: submission.hash });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Settlement failed';
         if (!dryRun) await markPayoutFailed(payout.id, message);

@@ -152,3 +152,36 @@ describe('findPaymentForInvoice', () => {
     }
   });
 });
+
+// --- AP-149: checkPayoutTxConfirmed ---
+
+describe('checkPayoutTxConfirmed', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns "confirmed" when Horizon reports a successful transaction', async () => {
+    mockTransactionCall.mockResolvedValue({ successful: true });
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    expect(await checkPayoutTxConfirmed('hash_abc')).toBe('confirmed');
+  });
+
+  it('returns "failed" when Horizon reports an unsuccessful transaction', async () => {
+    mockTransactionCall.mockResolvedValue({ successful: false });
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    expect(await checkPayoutTxConfirmed('hash_abc')).toBe('failed');
+  });
+
+  it('returns "pending" when Horizon returns 404', async () => {
+    mockTransactionCall.mockRejectedValue({ response: { status: 404 } });
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    expect(await checkPayoutTxConfirmed('hash_abc')).toBe('pending');
+  });
+
+  it('re-throws unexpected network errors', async () => {
+    mockTransactionCall.mockRejectedValue(new Error('Network timeout'));
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    await expect(checkPayoutTxConfirmed('hash_abc')).rejects.toThrow('Network timeout');
+  });
+});
+

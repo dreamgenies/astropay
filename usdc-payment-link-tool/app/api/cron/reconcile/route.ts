@@ -1,7 +1,16 @@
 import { fail, ok } from '@/lib/http';
 import { env } from '@/lib/env';
-import { findPaymentForInvoice } from '@/lib/stellar';
-import { markInvoiceExpired, markInvoicePaid, pendingInvoices, recordAssetMismatch, recordCronRun } from '@/lib/data';
+import { checkPayoutTxConfirmed, findPaymentForInvoice } from '@/lib/stellar';
+import {
+  markInvoiceExpired,
+  markInvoicePaid,
+  markPayoutFailed,
+  markPayoutSettled,
+  pendingInvoices,
+  recordAssetMismatch,
+  recordCronRun,
+  submittedPayouts,
+} from '@/lib/data';
 
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
@@ -21,10 +30,23 @@ export async function GET(request: Request) {
   let errorDetail: string | null = null;
 
   try {
+    // Step 1: Confirm any payouts that were submitted to Stellar but not yet settled.
+    const submitted = await submittedPayouts();
+    for (const payout of submitted) {
+      const txStatus = await checkPayoutTxConfirmed(payout.transaction_hash as string);
+      if (txStatus === 'confirmed') {
+        if (!dryRun) await markPayoutSettled(payout.id, payout.invoice_id_ref, payout.transaction_hash as string);
+        results.push({ payoutId: payout.id, action: 'payout_settled', txHash: payout.transaction_hash });
+      } else if (txStatus === 'failed') {
+        const reason = 'Settlement transaction failed on Stellar';
+        if (!dryRun) await markPayoutFailed(payout.id, reason);
+        results.push({ payoutId: payout.id, action: 'payout_failed', reason });
+      }
+      // txStatus === 'pending': not yet in Horizon, leave as submitted and check next run
+    }
+
+    // Step 2: Scan pending invoices for inbound buyer payments.
     const invoices = await pendingInvoices({ limit: scanLimit, windowHours: scanWindowHours });
-    // pendingInvoices() uses keyset pagination internally and returns the full
-    // backlog regardless of size — no arbitrary cap.
-    const invoices = await pendingInvoices();
     scanned = invoices.length;
 
     for (const invoice of invoices) {
@@ -34,24 +56,12 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const payment = await findPaymentForInvoice(invoice);
-      if (payment) {
-        const payout = await markInvoicePaid({
-          invoiceId: invoice.id,
-          transactionHash: payment.hash,
-          payload: payment.payment,
-        });
-        results.push({
-          publicId: invoice.public_id,
-          action: 'paid',
-          txHash: payment.hash,
-          payoutQueued: payout.payoutQueued,
-          payoutSkipReason: payout.payoutSkipReason,
-        });
       const result = await findPaymentForInvoice(invoice);
       if (result && 'assetMismatch' in result) {
-        if (!dryRun) await recordAssetMismatch(invoice.id, result.assetMismatch);
-        results.push({ publicId: invoice.public_id, action: 'asset_mismatch', ...result.assetMismatch });
+        const mismatch = result.assetMismatch;
+        if (!mismatch) continue;
+        if (!dryRun) await recordAssetMismatch(invoice.id, mismatch);
+        results.push({ publicId: invoice.public_id, action: 'asset_mismatch', ...mismatch });
         continue;
       }
       const payment = result;
@@ -99,3 +109,4 @@ export async function GET(request: Request) {
     }
   }
 }
+

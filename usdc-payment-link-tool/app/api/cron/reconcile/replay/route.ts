@@ -35,10 +35,21 @@ export async function POST(request: Request) {
     return ok({ dryRun, publicId: invoice.public_id, action: 'expired' });
   }
 
-  const payment = await findPaymentForInvoice(invoice);
-  if (!payment) {
+  const result = await findPaymentForInvoice(invoice);
+  if (!result) {
     return ok({ dryRun, publicId: invoice.public_id, action: 'pending' });
   }
+
+  if ('assetMismatch' in result) {
+    return ok({
+      dryRun,
+      publicId: invoice.public_id,
+      action: 'asset_mismatch',
+      ...result.assetMismatch,
+    });
+  }
+
+  const payment = result;
 
   if (dryRun) {
     return ok({
