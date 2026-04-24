@@ -1,7 +1,7 @@
 import { fail, ok } from '@/lib/http';
 import { env } from '@/lib/env';
 import { findPaymentForInvoice } from '@/lib/stellar';
-import { markInvoiceExpired, markInvoicePaid, pendingInvoices, recordCronRun } from '@/lib/data';
+import { markInvoiceExpired, markInvoicePaid, pendingInvoices, recordAssetMismatch, recordCronRun } from '@/lib/data';
 
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
@@ -28,7 +28,13 @@ export async function GET(request: Request) {
         results.push({ publicId: invoice.public_id, action: 'expired' });
         continue;
       }
-      const payment = await findPaymentForInvoice(invoice);
+      const result = await findPaymentForInvoice(invoice);
+      if (result && 'assetMismatch' in result) {
+        if (!dryRun) await recordAssetMismatch(invoice.id, result.assetMismatch);
+        results.push({ publicId: invoice.public_id, action: 'asset_mismatch', ...result.assetMismatch });
+        continue;
+      }
+      const payment = result;
       if (payment) {
         if (dryRun) {
           results.push({ publicId: invoice.public_id, action: 'paid', txHash: payment.hash });

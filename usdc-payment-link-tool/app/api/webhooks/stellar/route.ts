@@ -1,6 +1,11 @@
 import { fail, ok } from '@/lib/http';
 import { env } from '@/lib/env';
-import { getInvoiceByPublicId, markInvoicePaid, type MarkInvoicePaidPayoutResult } from '@/lib/data';
+import {
+  getInvoiceByPublicId,
+  isTransactionHashAlreadyProcessed,
+  markInvoicePaid,
+  type MarkInvoicePaidPayoutResult,
+} from '@/lib/data';
 
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
@@ -14,12 +19,21 @@ export async function POST(request: Request) {
   const publicId = String(body.publicId || '');
   const transactionHash = String(body.transactionHash || '');
   if (!publicId || !transactionHash) return fail('publicId and transactionHash are required');
+
+  // Idempotency guard: if this transaction hash is already recorded, the
+  // payment was already processed. Return success without mutating state.
+  if (await isTransactionHashAlreadyProcessed(transactionHash)) {
+    return ok({ received: true, alreadyProcessed: true, transactionHash });
+  }
+
   const invoice = await getInvoiceByPublicId(publicId);
   if (!invoice) return fail('Invoice not found', 404);
+
   let payout: MarkInvoicePaidPayoutResult | undefined;
   if (invoice.status === 'pending') {
     payout = await markInvoicePaid({ invoiceId: invoice.id, transactionHash, payload: body });
   }
+
   return ok({
     received: true,
     invoiceId: invoice.id,

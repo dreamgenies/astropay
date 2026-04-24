@@ -156,7 +156,7 @@ fn invoice_status_enum_covers_all_db_values() {
 
 #[test]
 fn payout_status_enum_covers_all_db_values() {
-    for s in ["queued", "submitted", "settled", "failed"] {
+    for s in ["queued", "submitted", "settled", "failed", "dead_lettered"] {
         assert!(
             PayoutStatus::from_str(s).is_some(),
             "PayoutStatus missing variant for '{s}'"
@@ -182,7 +182,7 @@ fn only_paid_invoice_status_allows_settlement() {
 
 #[test]
 fn only_non_terminal_payout_statuses_allow_settlement() {
-    let terminal = ["settled", "failed"];
+    let terminal = ["settled", "failed", "dead_lettered"];
     let non_terminal = ["queued", "submitted"];
 
     for status in terminal {
@@ -197,4 +197,17 @@ fn only_non_terminal_payout_statuses_allow_settlement() {
             "expected Ok for non-terminal payout status '{status}'"
         );
     }
+}
+
+#[test]
+fn dead_lettered_payout_is_rejected() {
+    // A dead-lettered payout requires manual operator intervention before
+    // settlement can be retried — it must never be auto-settled.
+    let err = validate_settle_transition("paid", "dead_lettered", "tx_abc").unwrap_err();
+    assert_eq!(
+        err,
+        SettleError::PayoutAlreadyTerminal {
+            actual: "dead_lettered".to_string()
+        }
+    );
 }

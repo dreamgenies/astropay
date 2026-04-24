@@ -4,6 +4,9 @@ import { buildSettlementXdr, getServer } from '@/lib/stellar';
 import { getInvoiceById, markPayoutFailed, markPayoutSettled, markPayoutSubmitted, queuedPayouts, recordCronRun } from '@/lib/data';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 
+/** Default number of queued payouts processed per settle run. Override with SETTLE_BATCH_SIZE env var. */
+const DEFAULT_SETTLE_BATCH_SIZE = 50;
+
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
   const bearer = auth?.replace('Bearer ', '');
@@ -13,13 +16,14 @@ function authorized(request: Request) {
 export async function GET(request: Request) {
   if (!authorized(request)) return fail('Unauthorized', 401);
   const dryRun = new URL(request.url).searchParams.get('dry_run') === 'true';
+  const batchSize = Math.max(1, Number(env.settleBatchSize) || DEFAULT_SETTLE_BATCH_SIZE);
   let processed = 0;
   const results: Array<Record<string, unknown>> = [];
   let success = true;
   let errorDetail: string | null = null;
   try {
     assertSettlementConfig();
-    const payouts = await queuedPayouts();
+    const payouts = await queuedPayouts(batchSize);
     processed = payouts.length;
 
     for (const payout of payouts) {
@@ -48,7 +52,7 @@ export async function GET(request: Request) {
       }
     }
 
-    return ok({ dryRun, processed, results });
+    return ok({ dryRun, batchSize, processed, results });
   } catch (error) {
     success = false;
     errorDetail = error instanceof Error ? error.message : 'settle failed';
@@ -58,7 +62,7 @@ export async function GET(request: Request) {
       await recordCronRun({
         jobType: 'settle',
         success,
-        metadata: { processed, results },
+        metadata: { batchSize, processed, results },
         errorDetail,
       });
     }

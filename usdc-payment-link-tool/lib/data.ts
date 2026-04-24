@@ -4,6 +4,7 @@ import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 import type { Invoice, Merchant } from '@/lib/types';
+import type { AssetMismatch } from '@/lib/stellar';
 
 export type MarkInvoicePaidPayoutResult = {
   payoutQueued: boolean;
@@ -104,18 +105,36 @@ export const getInvoiceById = async (id: string) => {
   return result.rows[0] || null;
 };
 
+export const isTransactionHashAlreadyProcessed = async (transactionHash: string): Promise<boolean> => {
+  const result = await query<{ id: string }>(
+    'SELECT id FROM invoices WHERE transaction_hash = $1',
+    [transactionHash],
+  );
+  return result.rows.length > 0;
+};
+
 export const markInvoicePaid = async ({ invoiceId, transactionHash, payload }: {
   invoiceId: string;
   transactionHash: string;
   payload: Record<string, unknown>;
 }): Promise<MarkInvoicePaidPayoutResult> => {
   return withTransaction(async (client) => {
-    const updated = await client.query(
-      `UPDATE invoices
-       SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-       WHERE id = $1 AND status = 'pending'`,
-      [invoiceId, transactionHash],
-    );
+    let updated;
+    try {
+      updated = await client.query(
+        `UPDATE invoices
+         SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
+         WHERE id = $1 AND status = 'pending'`,
+        [invoiceId, transactionHash],
+      );
+    } catch (err: any) {
+      // Unique-violation (23505) means a concurrent delivery already committed
+      // this hash. Treat as already-processed rather than an error.
+      if (err?.code === '23505') {
+        return { payoutQueued: false, payoutSkipReason: null };
+      }
+      throw err;
+    }
     if (updated.rowCount === 0) {
       return { payoutQueued: false, payoutSkipReason: null };
     }
@@ -230,6 +249,14 @@ export const queuedPayouts = async (): Promise<any[]> => {
   }
 
   return all;
+export const queuedPayouts = async (limit = 50) => {
+  const result = await query<any>(
+    `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents, invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
+     FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
+     WHERE payouts.status IN ('queued','failed') ORDER BY payouts.created_at ASC LIMIT $1`,
+    [limit],
+  );
+  return result.rows;
 };
 
 export const markPayoutSubmitted = async (payoutId: string, txHash: string) => {
@@ -248,6 +275,14 @@ export const markPayoutFailed = async (payoutId: string, reason: string) => {
   await query(`UPDATE payouts SET status = 'failed', failure_reason = $2, updated_at = NOW() WHERE id = $1`, [payoutId, reason.slice(0, 500)]);
 };
 
+export const recordAssetMismatch = async (invoiceId: string, mismatch: AssetMismatch) => {
+  await query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
+    invoiceId,
+    'payment_asset_mismatch',
+    JSON.stringify(mismatch),
+  ]);
+};
+
 /** Persists a reconcile/settle cron run for ops and debugging. Swallows DB errors so cron HTTP behavior is unchanged. */
 export const recordCronRun = async ({
   jobType,
@@ -255,7 +290,7 @@ export const recordCronRun = async ({
   metadata,
   errorDetail,
 }: {
-  jobType: 'reconcile' | 'settle';
+  jobType: 'reconcile' | 'settle' | 'purge_sessions';
   success: boolean;
   metadata: Record<string, unknown>;
   errorDetail?: string | null;

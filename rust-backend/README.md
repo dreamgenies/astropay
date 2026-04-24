@@ -122,6 +122,58 @@ Other HTTP errors (400, 404, 409, 501, 500) still use the legacy form `{ "error"
 Migration `004_cron_runs.sql` adds an append-only table keyed by `job_type` (`reconcile` \| `settle`) with JSONB `metadata` (response-shaped summary: `scanned` / `results` or `processed` / `results`) and optional `error_detail`. Successful Rust reconcile runs insert a row (if the handler returns `Ok` after scanning; Horizon or DB errors before that point skip audit persistence). Settle (still not implemented) inserts `success = false` with the error text before returning `501`. Audit insert failures are logged and do not change the HTTP status.
 
 **Verification:** `cargo test` checks that `004_cron_runs.sql` defines the table and index; apply migrations with `cargo run --bin migrate` before relying on audit rows in development.
+
+## Payout settlement retry tracking (`payouts`)
+
+### Column definitions
+
+Migrations `005_payout_dead_letter.sql` and `007_payout_attempt_counters_and_last_error.sql` enable operators to debug and investigate payout failures:
+
+| Column | Type | Purpose |
+| --- | --- | --- |
+| `failure_count` | `INTEGER` | Number of settlement attempts that failed for this payout (added by migration 005). |
+| `last_failure_at` | `TIMESTAMPTZ` | Timestamp of the most recent failed attempt (added by migration 005). |
+| `last_failure_reason` | `TEXT` | Error message from the most recent failure, for debugging and operator visibility (added by migration 007). |
+
+### Retry and dead-letter workflow
+
+1. **Initial payout:** Invoice is marked `paid` after Horizon webhook detection. Reconciliation inserts a payout row with `status = 'queued'` and all failure fields `NULL`.
+
+2. **Settlement failure:** When a settlement attempt fails (still not fully implemented in Rust), the `failure_reason` is captured and the payout status is set to `'failed'`.
+
+3. **Cron settle handler retry:** `GET /api/cron/settle` (with `Authorization: Bearer <CRON_SECRET>`) scans payouts with `status = 'failed'`:
+   - Increments `failure_count` by 1.
+   - Sets `last_failure_at = NOW()`.
+   - Sets `last_failure_reason` to the stored error message.
+   - If `failure_count < PAYOUT_DEAD_LETTER_THRESHOLD` (currently 5), resets status to `'queued'` for the next settlement attempt.
+   - If `failure_count >= 5`, escalates to `status = 'dead_lettered'` and inserts a row into `payout_dead_letters` for operator review.
+
+4. **Operator resolution:** Dead-lettered payouts require manual investigation and resolution (e.g., invalid destination key, network issues, insufficient funds). They do not auto-retry.
+
+### Indexing
+
+Migration `007` creates an index on `payouts(last_failure_at DESC NULLS LAST)` to support queries that discover recently-failed payouts for monitoring or manual retry workflows.
+
+### Example queries for operators
+
+```sql
+-- Find payouts that are not yet dead-lettered but have failed at least once:
+SELECT id, invoice_id, merchant_id, failure_count, last_failure_at, last_failure_reason
+FROM payouts
+WHERE failure_count > 0 AND status != 'dead_lettered'
+ORDER BY last_failure_at DESC;
+
+-- Find all dead-lettered payouts for a merchant:
+SELECT p.id, p.invoice_id, p.failure_count, p.last_failure_reason,
+       dl.created_at
+FROM payouts p
+INNER JOIN payout_dead_letters dl ON p.id = dl.payout_id
+WHERE p.merchant_id = $1
+ORDER BY dl.created_at DESC;
+```
+
+**Verification:** `cargo test` checks that migration 007 defines `last_failure_reason` and the index; apply migrations with `cargo run --bin migrate`.
+
 ## Database migrations
 
 SQL lives in `../usdc-payment-link-tool/migrations/`. Apply with `cargo run --bin migrate` from `rust-backend/`. The runner errors clearly if the migrations directory is missing or if a file’s SQL fails.
@@ -159,3 +211,29 @@ The service reads env vars from:
 - `rust-backend/.env`
 - `../usdc-payment-link-tool/.env.local`
 - `../usdc-payment-link-tool/.env`
+
+## Webhook and reconciliation assumptions
+
+The full breakdown of what the webhook integration guarantees, what it does not, and how each failure mode is handled lives in:
+
+- [docs/reconciliation/webhook-assumptions.md](../docs/reconciliation/webhook-assumptions.md)
+
+Key points for contributors:
+
+- `POST /api/webhooks/stellar` trusts the caller's `transactionHash` — it does not verify against Horizon. Amount/asset/memo validation only happens in the cron reconcile path.
+- `GET /api/cron/reconcile` scans the most recent 50 payment operations on each invoice's destination account. Payments older than that window are not detected automatically — use `POST /api/cron/reconcile/replay` to rescan a single invoice.
+- `GET /api/cron/settle` is not implemented in Rust yet. The TypeScript route handles settlement in production.
+- All three payment-detection paths (`reconcile`, `webhook`, `replay`) converge on the same `WHERE status = 'pending'` guarded DB transaction, making double-fires safe.
+
+## `last_checkout_attempt_at` column (migration 005)
+
+Migration `005_invoice_last_checkout_attempt_at.sql` adds a nullable `TIMESTAMPTZ` column to `invoices`. It records when a buyer last loaded the checkout page for that invoice.
+
+- `NULL` means no checkout attempt has been observed (invoices created before this migration, or invoices never visited). Treat `NULL` and a past timestamp identically in application logic.
+- The column is intentionally nullable — no `NOT NULL` constraint — so the migration is safe to apply against existing rows without a backfill.
+- No index is created. Add one in a follow-up migration once a real `WHERE last_checkout_attempt_at > $1` query lands in application code.
+- The Rust `Invoice` struct and `from_row` mapping include the field. The reconcile and settle cron jobs do not write to it; only the checkout handler should update it.
+
+**Apply:** `cargo run --bin migrate`
+
+**Verify:** `cargo test checkout_attempt` (guards that the column is nullable, is `TIMESTAMPTZ`, and that no speculative index was added).

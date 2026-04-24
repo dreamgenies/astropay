@@ -71,6 +71,7 @@ pub struct Invoice {
     pub settlement_hash: Option<String>,
     pub checkout_url: Option<String>,
     pub qr_data_url: Option<String>,
+    pub last_checkout_attempt_at: Option<DateTime<Utc>>,
     /// Opaque JSONB; add DB indexes only when queries filter on documented keys (see migrations).
     pub metadata: Value,
     pub created_at: DateTime<Utc>,
@@ -116,6 +117,7 @@ pub struct Payout {
     pub failure_reason: Option<String>,
     pub failure_count: i32,
     pub last_failure_at: Option<DateTime<Utc>>,
+    pub last_failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -186,6 +188,7 @@ impl Invoice {
             settlement_hash: row.get("settlement_hash"),
             checkout_url: row.get("checkout_url"),
             qr_data_url: row.get("qr_data_url"),
+            last_checkout_attempt_at: row.get("last_checkout_attempt_at"),
             metadata: row.get("metadata"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -208,6 +211,7 @@ impl Payout {
             failure_reason: row.get("failure_reason"),
             failure_count: row.get("failure_count"),
             last_failure_at: row.get("last_failure_at"),
+            last_failure_reason: row.get("last_failure_reason"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         }
