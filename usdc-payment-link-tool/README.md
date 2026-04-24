@@ -95,7 +95,7 @@ On `/pay/[publicId]`, failed wallet connect, signing, XDR build, or Horizon subm
 
 **Verify**
 
-- Automated: `npm run test` (maps common error strings to buyer-facing copy).
+- Automated: `npm run test` (covers shared formatting, validation, HTTP helpers, and buyer-facing payment failure copy).
 - Manual: open a checkout link with Freighter disconnected → use **Connect Freighter** → expect the “Freighter is not available” style panel, **Dismiss**, then connect and use **Pay now** → cancel the Freighter signature → expect cancellation copy and **Pay now** again.
 
 ## Rust backend setup

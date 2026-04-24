@@ -414,6 +414,13 @@ mod tests {
     // --- wallet key conflict ---
 
     #[test]
+    fn authorize_cron_rejects_missing_header() {
+        assert!(authorize_cron_request("secret", &HeaderMap::new()).is_err());
+    }
+
+    // --- wallet key conflict ---
+
+    #[test]
     fn wallet_conflict_detects_stellar_reuse() {
         let s1 = g_key('1');
         let t1 = g_key('2');
