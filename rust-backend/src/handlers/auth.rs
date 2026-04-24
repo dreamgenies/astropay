@@ -31,7 +31,7 @@ pub async fn register(
     let existing = client
         .query_opt(
             "SELECT 1 FROM merchants WHERE email = $1",
-            &[&payload.email.to_lowercase()],
+            &[&payload.email.trim()],
         )
         .await?;
     if existing.is_some() {
@@ -63,7 +63,7 @@ pub async fn register(
              VALUES ($1, $2, $3, $4, $5)
              RETURNING id, email, business_name, stellar_public_key, settlement_public_key, created_at",
             &[
-                &payload.email.to_lowercase(),
+                &payload.email.trim(),
                 &password_hash,
                 &payload.business_name,
                 &stellar,

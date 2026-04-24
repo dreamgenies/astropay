@@ -59,6 +59,17 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn merchant_email_citext_migration_alters_column_and_rebuilds_constraint() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/013_merchant_email_citext.sql");
+        let sql = std::fs::read_to_string(path).expect("read 013_merchant_email_citext.sql");
+        assert!(sql.contains("CREATE EXTENSION IF NOT EXISTS citext"), "must enable citext");
+        assert!(sql.contains("ALTER COLUMN email TYPE citext"), "must retype email to citext");
+        assert!(sql.contains("DROP CONSTRAINT IF EXISTS merchants_email_key"), "must drop old constraint");
+        assert!(sql.contains("ADD CONSTRAINT merchants_email_key UNIQUE (email)"), "must re-add unique constraint");
+    }
+
+    #[test]
     fn webhook_deliveries_migration_defines_table_and_index() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/011_webhook_deliveries.sql");
