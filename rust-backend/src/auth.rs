@@ -227,7 +227,7 @@ mod tests {
         authorize_cron_request, generate_memo, generate_public_id, hash_password_with_params,
         session_cookie, verify_password, wallet_keys_conflict_with_existing,
     };
-    use crate::config::Config;
+    use crate::config::{Config, LogFormat};
 
     fn secure_config() -> Config {
         Config {
@@ -253,6 +253,8 @@ mod tests {
             login_rate_email_window_secs: 900,
             login_rate_email_fail_max: 12,
             reconcile_scan_limit: 100,
+            reconcile_scan_window_hours: 0,
+            log_format: LogFormat::Human,
             reconcile_scan_window_hours: 24,
             archive_retention_days: 30,
             reconcile_scan_window_hours: 0,
@@ -283,6 +285,8 @@ mod tests {
             login_rate_email_window_secs: 900,
             login_rate_email_fail_max: 12,
             reconcile_scan_limit: 100,
+            reconcile_scan_window_hours: 0,
+            log_format: LogFormat::Human,
             reconcile_scan_window_hours: 24,
             archive_retention_days: 30,
             reconcile_scan_window_hours: 0,

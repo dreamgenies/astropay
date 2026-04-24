@@ -2,6 +2,28 @@ use std::{env, net::SocketAddr};
 
 use chrono::Duration;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogFormat {
+    Human,
+    Json,
+}
+
+impl LogFormat {
+    pub fn from_env(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Self::Json,
+            _ => Self::Human,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Json => "json",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -33,6 +55,7 @@ pub struct Config {
     /// When > 0, reconcile only considers invoices created within this many hours.
     /// Set to 0 (default) to scan all pending invoices regardless of age.
     pub reconcile_scan_window_hours: i64,
+    pub log_format: LogFormat,
     /// Number of days to keep settled invoices in the main table before archiving. Defaults to 30.
     pub archive_retention_days: i64,
 }
@@ -95,6 +118,9 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
+            log_format: LogFormat::from_env(
+                &env::var("LOG_FORMAT").unwrap_or_else(|_| "human".to_string()),
+            ),
             archive_retention_days: env::var("ARCHIVE_RETENTION_DAYS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -109,7 +135,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, LogFormat};
 
     fn sample_config() -> Config {
         Config {
@@ -136,6 +162,7 @@ mod tests {
             login_rate_email_fail_max: 12,
             reconcile_scan_limit: 100,
             reconcile_scan_window_hours: 0,
+            log_format: LogFormat::Human,
             archive_retention_days: 30,
         }
     }
@@ -188,5 +215,12 @@ mod tests {
         let mut config = sample_config();
         config.reconcile_scan_window_hours = 48;
         assert_eq!(config.reconcile_scan_window_hours, 48);
+    }
+
+    #[test]
+    fn log_format_parser_is_case_insensitive() {
+        assert_eq!(LogFormat::from_env("json"), LogFormat::Json);
+        assert_eq!(LogFormat::from_env("JSON"), LogFormat::Json);
+        assert_eq!(LogFormat::from_env("pretty"), LogFormat::Human);
     }
 }
