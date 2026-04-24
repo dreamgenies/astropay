@@ -158,6 +158,28 @@ cargo run --bin migrate
 cargo run
 ```
 
+### Seed demo data
+
+After running migrations, populate the database with two demo merchants and
+sample invoices covering every lifecycle state (`pending`, `paid`, `settled`,
+`expired`, `failed`):
+
+```bash
+cargo run --bin seed
+```
+
+The script is idempotent — safe to run multiple times. Login credentials:
+
+| email | password |
+|---|---|
+| alice@demo.astropay.test | demo1234 |
+| bob@demo.astropay.test | demo1234 |
+
+Remove seed data with:
+```sql
+DELETE FROM merchants WHERE email LIKE '%@demo.astropay.test';
+```
+
 The service reads env vars from:
 
 - `rust-backend/.env.local`
