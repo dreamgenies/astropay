@@ -68,6 +68,12 @@ pub struct AssetMismatch {
     pub amount: String,
 }
 
+/// Issue #172: emitted when destination + asset + amount match but memo is missing or wrong.
+#[derive(Debug, Clone)]
+pub struct MemoMismatch {
+    pub hash: String,
+    pub received_memo: String,
+    pub expected_memo: String,
 #[derive(Debug)]
 pub enum TransactionStatus {
     Success,
@@ -79,6 +85,7 @@ pub enum TransactionStatus {
 pub enum PaymentScanResult {
     Match(PaymentMatch),
     AssetMismatch(AssetMismatch),
+    MemoMismatch(MemoMismatch),
     NotFound,
 }
 
@@ -249,6 +256,12 @@ pub async fn find_payment_for_invoice(
                 memo: tx.memo,
             }));
         }
+        // Issue #172: destination + asset + amount match but memo is wrong/missing.
+        return Ok(PaymentScanResult::MemoMismatch(MemoMismatch {
+            hash: record.transaction_hash,
+            received_memo: tx.memo,
+            expected_memo: invoice.memo.clone(),
+        }));
     }
 
     Ok(PaymentScanResult::NotFound)
@@ -461,6 +474,31 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    // --- Issue #172: memo mismatch detection ---
+
+    #[test]
+    fn memo_mismatch_struct_holds_expected_fields() {
+        let m = super::MemoMismatch {
+            hash: "abc".to_string(),
+            received_memo: "wrong".to_string(),
+            expected_memo: "astro_abc".to_string(),
+        };
+        assert_eq!(m.hash, "abc");
+        assert_eq!(m.received_memo, "wrong");
+        assert_eq!(m.expected_memo, "astro_abc");
+    }
+
+    #[test]
+    fn payment_scan_result_has_memo_mismatch_variant() {
+        // Verify the variant compiles and can be matched.
+        let result = super::PaymentScanResult::MemoMismatch(super::MemoMismatch {
+            hash: "h".to_string(),
+            received_memo: "r".to_string(),
+            expected_memo: "e".to_string(),
+        });
+        assert!(matches!(result, super::PaymentScanResult::MemoMismatch(_)));
     }
 
     // --- Issue #157: settlement memo strategy ---

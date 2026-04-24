@@ -4,7 +4,7 @@ import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 import type { Invoice, Merchant } from '@/lib/types';
-import type { AssetMismatch } from '@/lib/stellar';
+import type { AssetMismatch, MemoMismatch } from '@/lib/stellar';
 
 export type MarkInvoicePaidPayoutResult = {
   payoutQueued: boolean;
@@ -243,6 +243,37 @@ export const recordAssetMismatch = async (invoiceId: string, mismatch: AssetMism
     'payment_asset_mismatch',
     JSON.stringify(mismatch),
   ]);
+};
+
+// Issue #172: emit event when destination matches but memo is missing or wrong.
+export const recordMemoMismatch = async (invoiceId: string, mismatch: MemoMismatch) => {
+  await query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
+    invoiceId,
+    'payment_memo_mismatch',
+    JSON.stringify(mismatch),
+  ]);
+};
+
+/**
+ * Issue #162: Records a webhook delivery ID to detect replays within the window.
+ * Returns true if the delivery_id was freshly inserted (first delivery).
+ * Returns false if it already existed (duplicate within the replay window).
+ */
+export const recordWebhookDelivery = async (
+  deliveryId: string,
+  windowSecs: number,
+): Promise<boolean> => {
+  // Purge stale entries outside the window first (best-effort, non-blocking).
+  query(
+    `DELETE FROM webhook_deliveries WHERE received_at < NOW() - ($1 * INTERVAL '1 second')`,
+    [windowSecs],
+  ).catch(() => {});
+
+  const result = await query(
+    `INSERT INTO webhook_deliveries (delivery_id) VALUES ($1) ON CONFLICT (delivery_id) DO NOTHING`,
+    [deliveryId],
+  );
+  return (result.rowCount ?? 0) > 0;
 };
 
 /** Persists a reconcile/settle cron run for ops and debugging. Swallows DB errors so cron HTTP behavior is unchanged. */

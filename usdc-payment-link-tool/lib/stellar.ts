@@ -54,9 +54,22 @@ export type AssetMismatch = {
   amount: string;
 };
 
+// Issue #172
+export type MemoMismatch = {
+  hash: string;
+  receivedMemo: string | null;
+  expectedMemo: string;
+};
+
+export type PaymentScanResult =
+  | { hash: string; payment: any; memo: string }
+  | { assetMismatch: AssetMismatch }
+  | { memoMismatch: MemoMismatch }
+  | null;
+
 export const findPaymentForInvoice = async (
   invoice: Invoice,
-): Promise<{ hash: string; payment: any; memo: string; assetMismatch?: never } | { assetMismatch: AssetMismatch } | null> => {
+): Promise<PaymentScanResult> => {
   const expectedAmount = invoiceAmountToAsset(invoice);
   const page = await getServer().payments().forAccount(invoice.destination_public_key).order('desc').limit(50).call();
   for (const record of page.records as any[]) {
@@ -81,6 +94,14 @@ export const findPaymentForInvoice = async (
     if (tx.memo === invoice.memo) {
       return { hash: record.transaction_hash, payment: record, memo: tx.memo };
     }
+    // Issue #172: destination + asset + amount match but memo is wrong/missing.
+    return {
+      memoMismatch: {
+        hash: record.transaction_hash,
+        receivedMemo: tx.memo ?? null,
+        expectedMemo: invoice.memo,
+      },
+    };
   }
   return null;
 };

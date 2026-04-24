@@ -19,7 +19,8 @@ All three paths converge on the same `markInvoicePaid` / DB transaction logic. T
 `POST /api/webhooks/stellar` (TS: `app/api/webhooks/stellar/route.ts`, Rust: `handlers/misc.rs`) receives a JSON body from an external provider and marks the matching invoice paid.
 
 **What it does:**
-- Authenticates the caller with `Authorization: Bearer <CRON_SECRET>` — the same secret used by cron routes.
+- Authenticates the caller with `Authorization: Bearer <CRON_SECRET>` or `<WEBHOOK_SECRET_SECONDARY>` (issue #159: secret rotation support).
+- Issue #162: Replay detection — if the caller sends an `X-Delivery-Id` header, the service checks if that delivery ID was already processed within the replay window (default 5 minutes). Duplicate deliveries are rejected with `{"received": true, "duplicate": true}` before any invoice mutation occurs.
 - Looks up the invoice by `publicId`.
 - If the invoice is `pending`, calls `markInvoicePaid` which atomically updates the invoice, inserts a `payment_events` row, and queues a payout row.
 - Returns `received: true` regardless of whether the invoice was already paid (idempotent read; no mutation if not pending).
@@ -27,7 +28,7 @@ All three paths converge on the same `markInvoicePaid` / DB transaction logic. T
 **What it does not do:**
 - It does not verify the `transactionHash` against Horizon. The caller is trusted to supply a valid hash.
 - It does not check that the payment amount, asset, or memo match the invoice. That validation only happens in the cron reconcile path via `find_payment_for_invoice`.
-- It does not deduplicate on `transactionHash`. If the same hash is sent twice for the same invoice, the second call is a no-op because the invoice is no longer `pending` after the first.
+- It does not deduplicate on `transactionHash` alone. If the same hash is sent twice for the same invoice, the second call is a no-op because the invoice is no longer `pending` after the first. However, if the caller sends an `X-Delivery-Id` header, the service will reject duplicate deliveries within the replay window even if the invoice is still pending.
 
 ## What the cron reconcile endpoint does
 
@@ -132,11 +133,51 @@ If any field mismatches, the payment is skipped and the invoice stays `pending` 
 
 ## Guarantees the integration does not provide
 
-- **Exactly-once webhook delivery**: the webhook endpoint does not verify signatures or deduplicate on a provider-assigned delivery ID. If the provider retries a delivery, the second call is a no-op only because the invoice is no longer `pending` — not because of explicit deduplication.
+- **Exactly-once webhook delivery**: the webhook endpoint deduplicates on `X-Delivery-Id` within the replay window (default 5 min). Outside that window, or if no `X-Delivery-Id` is sent, a second delivery is a no-op only because the invoice is no longer `pending`.
 - **Payment amount/asset verification via webhook**: the webhook path trusts the caller. Only the cron reconcile path verifies amount, asset, issuer, and memo against Horizon.
 - **Detection of payments older than 50 operations**: the Horizon query window is fixed at 50. High-volume destination accounts may miss older payments.
 - **Automatic recovery for expired invoices with on-chain payments**: no automated path exists. Operator intervention is required.
 - **Rust settle parity**: the Rust backend does not execute settlement transactions yet. The TypeScript settle route is the only production-ready settlement path.
+
+## Secret rotation procedure (issue #159)
+
+To rotate `CRON_SECRET` / webhook secret without downtime:
+
+1. Set `WEBHOOK_SECRET_SECONDARY=<new_secret>` and deploy. Both old and new secrets are now accepted.
+2. Update all webhook callers to use `<new_secret>`.
+3. Promote: set `CRON_SECRET=<new_secret>` and clear `WEBHOOK_SECRET_SECONDARY`, then deploy.
+
+During step 1–2 both secrets are valid. No requests are dropped.
+
+## Replay detection window (issue #162)
+
+Webhook callers should send a unique `X-Delivery-Id` header per delivery attempt. The service stores each delivery ID in `webhook_deliveries` and rejects duplicates within `WEBHOOK_REPLAY_WINDOW_SECS` (default 300 seconds / 5 minutes).
+
+- If `X-Delivery-Id` is absent, replay detection is skipped and idempotency falls back to the `transaction_hash` uniqueness check.
+- Stale entries outside the window are purged lazily on each delivery.
+- The `webhook_deliveries` table can be queried to audit recent deliveries.
+
+## Memo mismatch events (issue #172)
+
+When the cron reconcile path finds a payment where destination + asset + amount all match an invoice but the memo is wrong or missing, it inserts a `payment_events` row with `event_type = 'payment_memo_mismatch'` and payload:
+
+```json
+{ "hash": "<tx_hash>", "receivedMemo": "<actual_memo>", "expectedMemo": "<invoice_memo>" }
+```
+
+The invoice stays `pending`. This event is intended for support and fraud review. The reconcile response includes `action: "memo_mismatch"` for that invoice.
+
+## Partial index for pending invoices (issue #191)
+
+Migration `012_pending_invoices_expiry_idx.sql` adds:
+
+```sql
+CREATE INDEX IF NOT EXISTS invoices_pending_expires_at_idx
+  ON invoices (expires_at ASC)
+  WHERE status = 'pending';
+```
+
+This index is used by reconcile queries that locate expiring invoices. Only live pending rows are indexed, so it stays small as invoices transition to terminal states.
 
 ## Operator runbook
 

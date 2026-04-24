@@ -20,6 +20,10 @@ export const env = {
   platformFeeBps: Number(get('PLATFORM_FEE_BPS', '100')),
   invoiceExpiryHours: Number(get('INVOICE_EXPIRY_HOURS', '24')),
   cronSecret: get('CRON_SECRET', ''),
+  /** Secondary webhook secret for zero-downtime rotation (issue #159). When set, both primary and secondary are accepted. */
+  webhookSecretSecondary: get('WEBHOOK_SECRET_SECONDARY', ''),
+  /** Replay detection window in seconds (issue #162). Deliveries with the same X-Delivery-Id within this window are rejected. Defaults to 300 (5 min). */
+  webhookReplayWindowSecs: Number(get('WEBHOOK_REPLAY_WINDOW_SECS', '300')),
   /** Max payouts processed per settle cron run. Defaults to 50. */
   settleBatchSize: Number(get('SETTLE_BATCH_SIZE', '50')),
   nextPublicStellarNetwork: get('NEXT_PUBLIC_STELLAR_NETWORK', get('STELLAR_NETWORK', 'TESTNET')),
