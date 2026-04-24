@@ -120,6 +120,54 @@ describe('findPaymentForInvoice', () => {
     }
   });
 
+  it('returns memoMismatch when destination+asset+amount match but memo is wrong', async () => {
+    mockPaymentsCall.mockResolvedValue({
+      records: [
+        {
+          type: 'payment',
+          to: 'DEST_KEY',
+          asset_code: 'USDC',
+          asset_issuer: 'ISSUER_A',
+          amount: '10.00',
+          transaction_hash: 'tx_hash_3',
+        },
+      ],
+    });
+    mockTransactionCall.mockResolvedValue({ memo: 'wrong_memo' });
+
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    const result = await findPaymentForInvoice(BASE_INVOICE);
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveProperty('memoMismatch');
+    if (result && 'memoMismatch' in result) {
+      expect(result.memoMismatch.receivedMemo).toBe('wrong_memo');
+      expect(result.memoMismatch.expectedMemo).toBe('astro_deadbeef');
+      expect(result.memoMismatch.hash).toBe('tx_hash_3');
+    }
+  });
+
+  it('returns memoMismatch when memo is null/missing', async () => {
+    mockPaymentsCall.mockResolvedValue({
+      records: [
+        {
+          type: 'payment',
+          to: 'DEST_KEY',
+          asset_code: 'USDC',
+          asset_issuer: 'ISSUER_A',
+          amount: '10.00',
+          transaction_hash: 'tx_hash_4',
+        },
+      ],
+    });
+    mockTransactionCall.mockResolvedValue({ memo: undefined });
+
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    const result = await findPaymentForInvoice(BASE_INVOICE);
+
+    expect(result).toHaveProperty('memoMismatch');
+  });
+
   it('returns null when no matching payment found', async () => {
     mockPaymentsCall.mockResolvedValue({ records: [] });
     const { findPaymentForInvoice } = await import('@/lib/stellar');

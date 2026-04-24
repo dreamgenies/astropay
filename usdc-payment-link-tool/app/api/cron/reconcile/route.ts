@@ -1,7 +1,7 @@
 import { fail, ok } from '@/lib/http';
 import { env } from '@/lib/env';
 import { findPaymentForInvoice } from '@/lib/stellar';
-import { markInvoiceExpired, markInvoicePaid, pendingInvoices, recordAssetMismatch, recordCronRun } from '@/lib/data';
+import { markInvoiceExpired, markInvoicePaid, pendingInvoices, recordAssetMismatch, recordMemoMismatch, recordCronRun } from '@/lib/data';
 
 function authorized(request: Request) {
   const auth = request.headers.get('authorization');
@@ -52,6 +52,12 @@ export async function GET(request: Request) {
       if (result && 'assetMismatch' in result) {
         if (!dryRun) await recordAssetMismatch(invoice.id, result.assetMismatch);
         results.push({ publicId: invoice.public_id, action: 'asset_mismatch', ...result.assetMismatch });
+        continue;
+      }
+      // Issue #172: destination + asset + amount match but memo is wrong/missing.
+      if (result && 'memoMismatch' in result) {
+        if (!dryRun) await recordMemoMismatch(invoice.id, result.memoMismatch);
+        results.push({ publicId: invoice.public_id, action: 'memo_mismatch', ...result.memoMismatch });
         continue;
       }
       const payment = result;

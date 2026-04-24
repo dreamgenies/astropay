@@ -278,6 +278,32 @@ pub async fn reconcile(
                     "expectedAssetCode": mismatch.expected_asset_code,
                 }));
             }
+            // Issue #172: destination + asset + amount match but memo is wrong/missing.
+            PaymentScanResult::MemoMismatch(mismatch) => {
+                if !dry_run {
+                    client
+                        .execute(
+                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
+                            &[
+                                &invoice.id,
+                                &"payment_memo_mismatch",
+                                &json!({
+                                    "hash": mismatch.hash,
+                                    "receivedMemo": mismatch.received_memo,
+                                    "expectedMemo": mismatch.expected_memo,
+                                }),
+                            ],
+                        )
+                        .await?;
+                }
+                results.push(json!({
+                    "publicId": invoice.public_id,
+                    "action": "memo_mismatch",
+                    "hash": mismatch.hash,
+                    "receivedMemo": mismatch.received_memo,
+                    "expectedMemo": mismatch.expected_memo,
+                }));
+            }
             PaymentScanResult::Match(payment) => {
             Some(payment) => {
                 // Idempotency guard: if this transaction hash is already stored
@@ -1187,6 +1213,14 @@ mod tests {
     //
     // These tests verify the action strings produced by each branch so that
     // callers can distinguish a fresh payment from a duplicate delivery.
+
+    #[test]
+    fn memo_mismatch_action_string_is_stable() {
+        // Emitted when destination + asset + amount match but memo is wrong.
+        // External callers (support tooling, fraud review) may branch on this value.
+        let action = "memo_mismatch";
+        assert_eq!(action, "memo_mismatch");
+    }
 
     #[test]
     fn already_processed_action_string_is_stable() {

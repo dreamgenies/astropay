@@ -59,6 +59,28 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn webhook_deliveries_migration_defines_table_and_index() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/011_webhook_deliveries.sql");
+        let sql = std::fs::read_to_string(path).expect("read 011_webhook_deliveries.sql");
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS webhook_deliveries"));
+        assert!(sql.contains("delivery_id TEXT PRIMARY KEY"));
+        assert!(sql.contains("webhook_deliveries_received_at_idx"));
+        assert!(sql.contains("CREATE INDEX IF NOT EXISTS"));
+    }
+
+    #[test]
+    fn pending_invoices_expiry_index_migration_is_partial() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/012_pending_invoices_expiry_idx.sql");
+        let sql = std::fs::read_to_string(path).expect("read 012_pending_invoices_expiry_idx.sql");
+        assert!(sql.contains("invoices_pending_expires_at_idx"));
+        assert!(sql.contains("WHERE status = 'pending'"), "must be a partial index");
+        assert!(sql.contains("expires_at ASC"));
+        assert!(sql.contains("CREATE INDEX IF NOT EXISTS"));
+    }
+
+    #[test]
     fn payment_events_event_type_index_migration_is_idempotent() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/010_payment_events_event_type_index.sql");
