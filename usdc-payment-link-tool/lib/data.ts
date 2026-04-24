@@ -4,6 +4,7 @@ import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 import type { Invoice, Merchant } from '@/lib/types';
+import type { AssetMismatch } from '@/lib/stellar';
 
 export type MarkInvoicePaidPayoutResult = {
   payoutQueued: boolean;
@@ -104,18 +105,36 @@ export const getInvoiceById = async (id: string) => {
   return result.rows[0] || null;
 };
 
+export const isTransactionHashAlreadyProcessed = async (transactionHash: string): Promise<boolean> => {
+  const result = await query<{ id: string }>(
+    'SELECT id FROM invoices WHERE transaction_hash = $1',
+    [transactionHash],
+  );
+  return result.rows.length > 0;
+};
+
 export const markInvoicePaid = async ({ invoiceId, transactionHash, payload }: {
   invoiceId: string;
   transactionHash: string;
   payload: Record<string, unknown>;
 }): Promise<MarkInvoicePaidPayoutResult> => {
   return withTransaction(async (client) => {
-    const updated = await client.query(
-      `UPDATE invoices
-       SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-       WHERE id = $1 AND status = 'pending'`,
-      [invoiceId, transactionHash],
-    );
+    let updated;
+    try {
+      updated = await client.query(
+        `UPDATE invoices
+         SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
+         WHERE id = $1 AND status = 'pending'`,
+        [invoiceId, transactionHash],
+      );
+    } catch (err: any) {
+      // Unique-violation (23505) means a concurrent delivery already committed
+      // this hash. Treat as already-processed rather than an error.
+      if (err?.code === '23505') {
+        return { payoutQueued: false, payoutSkipReason: null };
+      }
+      throw err;
+    }
     if (updated.rowCount === 0) {
       return { payoutQueued: false, payoutSkipReason: null };
     }
@@ -158,16 +177,132 @@ export const markInvoiceExpired = async (invoiceId: string) => {
   await query(`UPDATE invoices SET status = 'expired', updated_at = NOW() WHERE id = $1 AND status = 'pending'`, [invoiceId]);
 };
 
-export const pendingInvoices = async () => {
-  const result = await query<Invoice>(`SELECT * FROM invoices WHERE status = 'pending' ORDER BY created_at ASC LIMIT 100`);
+export const pendingInvoices = async ({
+  limit = env.reconcileScanLimit,
+  windowHours = env.reconcileScanWindowHours,
+}: { limit?: number; windowHours?: number } = {}) => {
+  if (windowHours > 0) {
+    const result = await query<Invoice>(
+      `SELECT * FROM invoices
+       WHERE status = 'pending'
+         AND created_at >= NOW() - ($2 * INTERVAL '1 hour')
+       ORDER BY created_at ASC
+       LIMIT $1`,
+      [limit, windowHours],
+    );
+    return result.rows;
+  }
+  const result = await query<Invoice>(
+    `SELECT * FROM invoices WHERE status = 'pending' ORDER BY created_at ASC LIMIT $1`,
+    [limit],
+  );
   return result.rows;
+const RECONCILE_PAGE_SIZE = 100;
+const SETTLE_PAGE_SIZE = 100;
+
+/**
+ * Returns ALL pending invoices using keyset pagination so backlogs larger than
+ * a single page are fully drained in one call without manual babysitting.
+ *
+ * Cursor: (created_at, id) — stable and covered by the existing status + created_at indexes.
+ * Each page fetches up to RECONCILE_PAGE_SIZE rows; iteration stops when a page is smaller
+ * than the page size (last page reached).
+ */
+export const pendingInvoices = async (): Promise<Invoice[]> => {
+  const all: Invoice[] = [];
+  let cursorCreatedAt = new Date(0).toISOString();
+  let cursorId = '00000000-0000-0000-0000-000000000000';
+
+  while (true) {
+    const result = await query<Invoice>(
+      `SELECT * FROM invoices
+       WHERE status = 'pending'
+         AND (created_at, id) > ($1, $2)
+       ORDER BY created_at ASC, id ASC
+       LIMIT $3`,
+      [cursorCreatedAt, cursorId, RECONCILE_PAGE_SIZE],
+    );
+    const rows = result.rows;
+    all.push(...rows);
+
+    if (rows.length < RECONCILE_PAGE_SIZE) break;
+
+    // Advance cursor to the last row on this page.
+    const last = rows[rows.length - 1];
+    cursorCreatedAt = last.created_at;
+    cursorId = last.id;
+  }
+
+  return all;
 };
 
 export const queuedPayouts = async () => {
+  // Apply exponential backoff for failed payouts: only return a failed payout
+  // once its backoff window has elapsed since last_failure_at.
+  //
+  // Backoff schedule (matches Rust settle.rs):
+  //   failure_count = 1 → 5 min
+  //   failure_count = 2 → 15 min
+  //   failure_count = 3 → 1 hour
+  //   failure_count = 4 → 4 hours
+  //   failure_count ≥ 5 → dead-lettered (excluded here)
   const result = await query<any>(
     `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents, invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
      FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
-     WHERE payouts.status IN ('queued','failed') ORDER BY payouts.created_at ASC LIMIT 50`,
+     WHERE payouts.status = 'queued'
+        OR (
+          payouts.status = 'failed'
+          AND payouts.last_failure_at IS NOT NULL
+          AND payouts.last_failure_at + (
+            CASE payouts.failure_count
+              WHEN 1 THEN INTERVAL '5 minutes'
+              WHEN 2 THEN INTERVAL '15 minutes'
+              WHEN 3 THEN INTERVAL '1 hour'
+              WHEN 4 THEN INTERVAL '4 hours'
+              ELSE NULL
+            END
+          ) <= NOW()
+        )
+     ORDER BY payouts.created_at ASC LIMIT 50`,
+/**
+ * Returns ALL queued/failed payouts using keyset pagination so backlogs larger
+ * than a single page are fully drained in one call.
+ *
+ * Cursor: (created_at, id) — stable across pages.
+ */
+export const queuedPayouts = async (): Promise<any[]> => {
+  const all: any[] = [];
+  let cursorCreatedAt = new Date(0).toISOString();
+  let cursorId = '00000000-0000-0000-0000-000000000000';
+
+  while (true) {
+    const result = await query<any>(
+      `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents,
+              invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
+       FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
+       WHERE payouts.status IN ('queued', 'failed')
+         AND (payouts.created_at, payouts.id) > ($1, $2)
+       ORDER BY payouts.created_at ASC, payouts.id ASC
+       LIMIT $3`,
+      [cursorCreatedAt, cursorId, SETTLE_PAGE_SIZE],
+    );
+    const rows = result.rows;
+    all.push(...rows);
+
+    if (rows.length < SETTLE_PAGE_SIZE) break;
+
+    const last = rows[rows.length - 1];
+    cursorCreatedAt = last.created_at;
+    cursorId = last.id;
+  }
+
+  return all;
+export const queuedPayouts = async (limit = 50) => {
+  const result = await query<any>(
+    `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents, invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
+     FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
+     WHERE payouts.status IN ('queued','failed') ORDER BY payouts.created_at ASC LIMIT $1`,
+    [limit],
   );
   return result.rows;
 };
@@ -188,6 +323,14 @@ export const markPayoutFailed = async (payoutId: string, reason: string) => {
   await query(`UPDATE payouts SET status = 'failed', failure_reason = $2, updated_at = NOW() WHERE id = $1`, [payoutId, reason.slice(0, 500)]);
 };
 
+export const recordAssetMismatch = async (invoiceId: string, mismatch: AssetMismatch) => {
+  await query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
+    invoiceId,
+    'payment_asset_mismatch',
+    JSON.stringify(mismatch),
+  ]);
+};
+
 /** Persists a reconcile/settle cron run for ops and debugging. Swallows DB errors so cron HTTP behavior is unchanged. */
 export const recordCronRun = async ({
   jobType,
@@ -195,7 +338,7 @@ export const recordCronRun = async ({
   metadata,
   errorDetail,
 }: {
-  jobType: 'reconcile' | 'settle';
+  jobType: 'reconcile' | 'settle' | 'purge_sessions';
   success: boolean;
   metadata: Record<string, unknown>;
   errorDetail?: string | null;

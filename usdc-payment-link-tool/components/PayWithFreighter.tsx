@@ -170,13 +170,13 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
         </button>
       </div>
       {address ? <p className="muted">Payer: <span className="mono">{address}</span></p> : null}
-      {error ? <p className="error">{error}</p> : null}
       <PendingSettlementBanner status={status} />
       {address ? (
         <p className="muted">
           Payer: <span className="mono">{address}</span>
         </p>
       ) : null}
+      {failureView ? <PaymentFailurePanel view={failureView} onDismiss={() => setFailure(null)} onRetry={failure?.stage === 'wallet' ? () => void connect() : () => void pay()} /> : null}
       {failureView ? <PaymentFailurePanel view={failureView} onDismiss={() => setFailure(null)} /> : null}
     </div>
   );

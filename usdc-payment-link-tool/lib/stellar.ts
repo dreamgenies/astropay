@@ -45,13 +45,38 @@ export const submitSignedXdr = async (signedXdr: string) => {
   return getServer().submitTransaction(tx);
 };
 
-export const findPaymentForInvoice = async (invoice: Invoice) => {
+export type AssetMismatch = {
+  hash: string;
+  receivedAssetCode: string;
+  receivedAssetIssuer: string;
+  expectedAssetCode: string;
+  expectedAssetIssuer: string;
+  amount: string;
+};
+
+export const findPaymentForInvoice = async (
+  invoice: Invoice,
+): Promise<{ hash: string; payment: any; memo: string; assetMismatch?: never } | { assetMismatch: AssetMismatch } | null> => {
+  const expectedAmount = invoiceAmountToAsset(invoice);
   const page = await getServer().payments().forAccount(invoice.destination_public_key).order('desc').limit(50).call();
   for (const record of page.records as any[]) {
     if (record.type !== 'payment') continue;
     if ((record.to || record.account) !== invoice.destination_public_key) continue;
-    if (record.asset_code !== invoice.asset_code || record.asset_issuer !== invoice.asset_issuer) continue;
-    if (Number(record.amount).toFixed(2) !== invoiceAmountToAsset(invoice)) continue;
+    const amountMatches = Number(record.amount).toFixed(2) === expectedAmount;
+    const assetMatches = record.asset_code === invoice.asset_code && record.asset_issuer === invoice.asset_issuer;
+    if (amountMatches && !assetMatches) {
+      return {
+        assetMismatch: {
+          hash: record.transaction_hash,
+          receivedAssetCode: record.asset_code ?? '',
+          receivedAssetIssuer: record.asset_issuer ?? '',
+          expectedAssetCode: invoice.asset_code,
+          expectedAssetIssuer: invoice.asset_issuer,
+          amount: expectedAmount,
+        },
+      };
+    }
+    if (!amountMatches || !assetMatches) continue;
     const tx = await getServer().transactions().transaction(record.transaction_hash).call();
     if (tx.memo === invoice.memo) {
       return { hash: record.transaction_hash, payment: record, memo: tx.memo };
@@ -60,11 +85,23 @@ export const findPaymentForInvoice = async (invoice: Invoice) => {
   return null;
 };
 
+/** Maximum bytes for a Stellar text memo (protocol limit). */
+export const SETTLEMENT_MEMO_MAX_BYTES = 28;
+
+/**
+ * Builds a deterministic settlement memo: `s:<publicId>` truncated to 28 bytes.
+ * The `s:` prefix distinguishes settlement transactions from buyer payment memos (`astro_*`).
+ * Stellar text memos are limited to 28 bytes; excess characters are silently truncated.
+ */
+export const buildSettlementMemo = (publicId: string): string =>
+  `s:${publicId}`.slice(0, SETTLEMENT_MEMO_MAX_BYTES);
+
 export const buildSettlementXdr = async ({ invoice, destination }: { invoice: Invoice; destination: string }) => {
   if (!env.platformTreasurySecretKey) throw new Error('Settlement signing key is missing');
   const server = getServer();
   const treasury = Keypair.fromSecret(env.platformTreasurySecretKey);
   const source = await server.loadAccount(treasury.publicKey());
+  const memo = buildSettlementMemo(invoice.public_id);
   const tx = new TransactionBuilder(source, {
     fee: String(Number(BASE_FEE) * 10),
     networkPassphrase: env.networkPassphrase,
@@ -74,7 +111,7 @@ export const buildSettlementXdr = async ({ invoice, destination }: { invoice: In
       asset: getAsset(),
       amount: (invoice.net_amount_cents / 100).toFixed(2),
     }))
-    .addMemo(Memo.text(`settle_${invoice.public_id}`.slice(0, 28)))
+    .addMemo(Memo.text(memo))
     .setTimeout(180)
     .build();
   tx.sign(treasury);

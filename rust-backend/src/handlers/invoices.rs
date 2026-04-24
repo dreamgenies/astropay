@@ -23,9 +23,20 @@ pub async fn list_invoices(
 ) -> Result<Json<Value>, AppError> {
     let client = state.pool.get().await?;
     let merchant = require_merchant(&state, &client, &jar).await?;
+    // Uses invoices_merchant_created_at_id_idx (migration 006) — single index scan,
+    // no separate sort step. Explicit column list avoids fetching qr_data_url
+    // (large base64 blob) on the list view.
     let rows = client
         .query(
-            "SELECT * FROM invoices WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT 100",
+            "SELECT id, public_id, merchant_id, description, amount_cents, currency,
+                    asset_code, asset_issuer, destination_public_key, memo, status,
+                    gross_amount_cents, platform_fee_cents, net_amount_cents,
+                    expires_at, paid_at, settled_at, transaction_hash, settlement_hash,
+                    checkout_url, NULL::text AS qr_data_url, metadata, created_at, updated_at
+             FROM invoices
+             WHERE merchant_id = $1
+             ORDER BY created_at DESC, id
+             LIMIT 100",
             &[&merchant.id],
         )
         .await?;

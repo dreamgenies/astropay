@@ -6,6 +6,8 @@ export type CheckoutFailureView = {
   hints: string[];
   /** Raw message for support / debugging; shown in a subdued block */
   technical?: string;
+  /** Label for the retry button; omit for non-recoverable failures */
+  retryLabel?: string;
 };
 
 function uniqueHints(hints: string[]) {
@@ -60,6 +62,7 @@ export function resolveCheckoutFailure(rawMessage: string, stage: CheckoutFailur
         ...base.hints,
       ]),
       technical: message,
+      retryLabel: 'Connect Freighter',
     };
   }
 
@@ -72,6 +75,7 @@ export function resolveCheckoutFailure(rawMessage: string, stage: CheckoutFailur
       description: 'Freighter closed without signing, so no transaction was broadcast.',
       hints: uniqueHints(['Select Pay now again when you are ready to approve in Freighter.', ...base.hints]),
       technical: message,
+      retryLabel: 'Try again',
     };
   }
 
@@ -81,6 +85,7 @@ export function resolveCheckoutFailure(rawMessage: string, stage: CheckoutFailur
       description: 'We need a connected Freighter account before we can build your payment.',
       hints: uniqueHints(['Click Connect Freighter and approve access, then Pay now.', ...base.hints]),
       technical: message,
+      retryLabel: 'Connect Freighter',
     };
   }
 
@@ -106,6 +111,7 @@ export function resolveCheckoutFailure(rawMessage: string, stage: CheckoutFailur
         ...base.hints,
       ]),
       technical: message,
+      retryLabel: 'Try again',
     };
   }
 
@@ -153,6 +159,7 @@ export function resolveCheckoutFailure(rawMessage: string, stage: CheckoutFailur
       description: 'Another transaction may have updated your account first, so this one was rejected.',
       hints: uniqueHints(['Wait a few seconds and press Pay now again.', ...defaults.submit.hints]),
       technical: message,
+      retryLabel: 'Retry payment',
     };
   }
 

@@ -3,6 +3,22 @@
 /// The DB-coupled execution lives in the cron handler. This module holds the
 /// invariant checks so they can be exercised in tests without a live Postgres
 /// connection.
+///
+/// # Retry backoff policy
+///
+/// Failed payouts are not immediately requeued. Each failure increments
+/// `failure_count` and sets `last_failure_at`. A payout is only eligible for
+/// retry once the backoff window for its current failure count has elapsed:
+///
+/// | failure_count | backoff window |
+/// |---------------|----------------|
+/// | 1             | 5 minutes      |
+/// | 2             | 15 minutes     |
+/// | 3             | 1 hour         |
+/// | 4             | 4 hours        |
+/// | ≥ 5           | dead-lettered  |
+///
+/// Use [`backoff_seconds`] to compute the required delay for a given count.
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum InvoiceStatus {
@@ -42,6 +58,7 @@ pub enum PayoutStatus {
     Submitted,
     Settled,
     Failed,
+    DeadLettered,
 }
 
 impl PayoutStatus {
@@ -51,6 +68,7 @@ impl PayoutStatus {
             "submitted" => Some(Self::Submitted),
             "settled" => Some(Self::Settled),
             "failed" => Some(Self::Failed),
+            "dead_lettered" => Some(Self::DeadLettered),
             _ => None,
         }
     }
@@ -89,7 +107,9 @@ pub fn validate_settle_transition(
     }
 
     match PayoutStatus::from_str(payout_status) {
-        Some(PayoutStatus::Settled) | Some(PayoutStatus::Failed) => {
+        Some(PayoutStatus::Settled)
+        | Some(PayoutStatus::Failed)
+        | Some(PayoutStatus::DeadLettered) => {
             return Err(SettleError::PayoutAlreadyTerminal {
                 actual: payout_status.to_string(),
             });
@@ -117,6 +137,38 @@ pub const SETTLE_MUTATIONS: SettleMutations = SettleMutations {
     event_type: "merchant_settled",
 };
 
+// ── Retry backoff ─────────────────────────────────────────────────────────────
+
+/// Returns the required backoff delay in seconds before a payout with the given
+/// `failure_count` is eligible for retry.
+///
+/// `failure_count` is the value *after* the most recent failure has been
+/// recorded (i.e. the count that will be stored in the DB row).
+///
+/// Returns `None` when the count has reached or exceeded the dead-letter
+/// threshold — callers should escalate rather than schedule a retry.
+pub fn backoff_seconds(failure_count: i32) -> Option<i64> {
+    match failure_count {
+        1 => Some(5 * 60),          // 5 minutes
+        2 => Some(15 * 60),         // 15 minutes
+        3 => Some(60 * 60),         // 1 hour
+        4 => Some(4 * 60 * 60),     // 4 hours
+        _ => None,                  // dead-letter threshold reached
+    }
+}
+
+/// Returns `true` when enough time has elapsed since `last_failure_at` for the
+/// payout to be retried, given its current `failure_count`.
+///
+/// `now_secs` and `last_failure_secs` are Unix timestamps (seconds).
+/// Returns `false` if the payout should be dead-lettered (no backoff window).
+pub fn is_backoff_elapsed(failure_count: i32, last_failure_secs: i64, now_secs: i64) -> bool {
+    match backoff_seconds(failure_count) {
+        Some(delay) => now_secs >= last_failure_secs + delay,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,9 +193,19 @@ mod tests {
 
     #[test]
     fn payout_status_round_trips_all_variants() {
-        for s in ["queued", "submitted", "settled", "failed"] {
+        for s in ["queued", "submitted", "settled", "failed", "dead_lettered"] {
             assert!(PayoutStatus::from_str(s).is_some());
         }
+    }
+
+    #[test]
+    fn rejects_dead_lettered_payout() {
+        assert_eq!(
+            validate_settle_transition("paid", "dead_lettered", "abc123"),
+            Err(SettleError::PayoutAlreadyTerminal {
+                actual: "dead_lettered".to_string()
+            })
+        );
     }
 
     // ── validate_settle_transition ───────────────────────────────────────────
@@ -246,5 +308,77 @@ mod tests {
             SETTLE_MUTATIONS.payout_status,
             SETTLE_MUTATIONS.invoice_status
         );
+    }
+
+    // ── backoff_seconds ──────────────────────────────────────────────────────
+
+    #[test]
+    fn backoff_seconds_returns_expected_delays() {
+        assert_eq!(backoff_seconds(1), Some(5 * 60));
+        assert_eq!(backoff_seconds(2), Some(15 * 60));
+        assert_eq!(backoff_seconds(3), Some(60 * 60));
+        assert_eq!(backoff_seconds(4), Some(4 * 60 * 60));
+    }
+
+    #[test]
+    fn backoff_seconds_returns_none_at_dead_letter_threshold() {
+        assert_eq!(backoff_seconds(5), None);
+        assert_eq!(backoff_seconds(6), None);
+        assert_eq!(backoff_seconds(100), None);
+    }
+
+    #[test]
+    fn backoff_seconds_returns_none_for_zero() {
+        // failure_count=0 means no failure has been recorded yet; treat as dead-letter guard.
+        assert_eq!(backoff_seconds(0), None);
+    }
+
+    // ── is_backoff_elapsed ───────────────────────────────────────────────────
+
+    #[test]
+    fn backoff_not_elapsed_immediately_after_failure() {
+        let last_failure = 1_000_000_i64;
+        let now = last_failure + 1; // 1 second later — well within any window
+        assert!(!is_backoff_elapsed(1, last_failure, now));
+    }
+
+    #[test]
+    fn backoff_elapsed_after_full_window_passes() {
+        let last_failure = 1_000_000_i64;
+        let delay = backoff_seconds(1).unwrap();
+        let now = last_failure + delay;
+        assert!(is_backoff_elapsed(1, last_failure, now));
+    }
+
+    #[test]
+    fn backoff_not_elapsed_one_second_before_window() {
+        let last_failure = 1_000_000_i64;
+        let delay = backoff_seconds(2).unwrap();
+        let now = last_failure + delay - 1;
+        assert!(!is_backoff_elapsed(2, last_failure, now));
+    }
+
+    #[test]
+    fn backoff_elapsed_exactly_at_window_boundary() {
+        let last_failure = 1_000_000_i64;
+        let delay = backoff_seconds(3).unwrap();
+        let now = last_failure + delay;
+        assert!(is_backoff_elapsed(3, last_failure, now));
+    }
+
+    #[test]
+    fn backoff_returns_false_for_dead_letter_count() {
+        // failure_count >= 5 has no retry window; is_backoff_elapsed must return false.
+        let last_failure = 0_i64;
+        let now = i64::MAX;
+        assert!(!is_backoff_elapsed(5, last_failure, now));
+    }
+
+    #[test]
+    fn backoff_windows_are_strictly_increasing() {
+        let windows: Vec<i64> = (1..=4).map(|c| backoff_seconds(c).unwrap()).collect();
+        for pair in windows.windows(2) {
+            assert!(pair[1] > pair[0], "backoff windows must be strictly increasing");
+        }
     }
 }

@@ -4,7 +4,7 @@ This service is the beginning of the backend migration out of Next.js route hand
 
 What it currently owns:
 
-- merchant registration, login, logout, and cookie-backed sessions
+- merchant registration, login, logout, session refresh, and cookie-backed sessions
 - invoice creation, listing, detail lookup, and status lookup
 - Horizon-backed reconciliation for pending invoices
 - webhook-driven payment marking (`/api/webhooks/stellar`)
@@ -12,12 +12,71 @@ What it currently owns:
 
 Reconciliation and the Stellar webhook validate each merchant `settlement_public_key` with Stellar strkey decoding before inserting into `payouts`. Invalid keys skip payout queueing (invoice still marked paid) and emit a `payment_events` row with `event_type = payout_skipped_invalid_destination`. Run `cargo test` for strkey coverage.
 
+## Horizon payment fixtures
+
+Reusable synthetic Horizon payment payloads live in `src/horizon_fixtures.rs`. They cover good matches, bad matches, and ambiguous same-amount/same-destination cases where the transaction memo must disambiguate the invoice. The fixtures deliberately use synthetic transaction hashes and safe public test strings, not live payment data.
+
+**Verify:** `cargo test horizon_payment` exercises the fixture library through the Rust reconciliation matching logic.
+## Invoice-paid / payout-queued isolation
+
+The Rust reconcile, replay, and Stellar webhook paths share one money-state helper for marking an invoice paid and queueing its payout. The helper runs inside a single Postgres transaction and uses `UPDATE invoices ... WHERE id = $1 AND status = 'pending'` as a compare-and-set boundary. If a concurrent worker already moved the invoice out of `pending`, the update affects zero rows and the helper does not insert a `payment_events` row or a `payouts` row.
+
+Payout queueing remains idempotent through the `payouts.invoice_id` unique constraint and `ON CONFLICT (invoice_id) DO NOTHING`. The payout destination is the exact `settlement_public_key` value validated in the transaction, so the queued payout cannot drift to a different merchant key between validation and insert.
+
+Concurrent losers report `invoice_already_transitioned` as the skip reason instead of writing duplicate money-state side effects.
+
+**Verify:** `cargo test money_state` covers the row-count contract, stable skip reason strings, and the documented isolation expectations.
+## Reconciliation and settle pagination
+
+Both cron handlers process the **full backlog** in a single invocation using keyset pagination — there is no arbitrary row cap.
+
+| Handler | Table | Cursor columns | Page size constant |
+|---|---|---|---|
+| `GET /api/cron/reconcile` | `invoices WHERE status = 'pending'` | `(created_at, id)` | `RECONCILE_PAGE_SIZE = 100` |
+| `GET /api/cron/settle` | `payouts WHERE status = 'failed'` | `(updated_at, id)` | `SETTLE_PAGE_SIZE = 100` |
+
+Each page fetches up to the page-size constant ordered by the cursor columns ASC. The loop exits when a page returns fewer rows than the page size (last page reached). The cursor is advanced to the last row of each page before the next query.
+
+The settle cursor uses `updated_at` rather than `created_at` because each processed row is immediately updated — its `updated_at` advances past the cursor, so it cannot be re-fetched in a subsequent page of the same run.
+
+The same pagination logic is applied in the TypeScript Next.js route handlers via `pendingInvoices()` and `queuedPayouts()` in `lib/data.ts`.
+
+**Verify:** `cargo test reconcile_uses_keyset_pagination` and `cargo test settle_uses_keyset_pagination` pin the cursor SQL. The TypeScript pagination logic is covered by `lib/pagination.test.ts`.
+
 What is intentionally not faked yet:
 
 - buyer XDR generation/submission for checkout
 - merchant settlement cron
 
 Those routes return `501 Not Implemented` in the Rust service until the Stellar transaction logic is ported properly.
+
+## Session cookie security
+
+The `Secure` flag on the `astropay_session` cookie is driven by `APP_URL`:
+
+- `APP_URL` starts with `https://` → `secure_cookies = true` → `Secure` flag is set.
+- `APP_URL` starts with `http://` (local dev) → `secure_cookies = false` → `Secure` flag is absent.
+
+The cookie is always `HttpOnly` and `SameSite=Lax` regardless of environment.
+
+**Verify:** `cargo test session_cookie` runs four unit tests covering the secure flag, insecure flag, http-only invariant, and name/path stability — no running server or database required.
+
+## Session refresh (`POST /api/auth/refresh`)
+
+A valid session can be extended without re-authenticating:
+
+```
+POST /api/auth/refresh
+Cookie: astropay_session=<token>
+```
+
+Behavior:
+- If the cookie is present and the session row is unexpired, `expires_at` is extended by 30 days and a fresh JWT cookie is returned with `{ "ok": true }`.
+- If the cookie is missing or the session is expired/invalid, returns `401 AUTH_SESSION_REQUIRED`.
+- Does **not** create a new session row — only extends the existing one. Logout still invalidates the same row.
+- Does **not** accept an already-expired token (JWT `exp` validation runs first).
+
+**Verify:** call `POST /api/auth/refresh` with a valid session cookie and confirm the response sets a new cookie with a later expiry. Call it without a cookie and confirm `401`.
 
 ## Login rate limiting (`POST /api/auth/login`)
 
@@ -77,9 +136,72 @@ Other HTTP errors (400, 404, 409, 501, 500) still use the legacy form `{ "error"
 Migration `004_cron_runs.sql` adds an append-only table keyed by `job_type` (`reconcile` \| `settle`) with JSONB `metadata` (response-shaped summary: `scanned` / `results` or `processed` / `results`) and optional `error_detail`. Successful Rust reconcile runs insert a row (if the handler returns `Ok` after scanning; Horizon or DB errors before that point skip audit persistence). Settle (still not implemented) inserts `success = false` with the error text before returning `501`. Audit insert failures are logged and do not change the HTTP status.
 
 **Verification:** `cargo test` checks that `004_cron_runs.sql` defines the table and index; apply migrations with `cargo run --bin migrate` before relying on audit rows in development.
+
+## Payout settlement retry tracking (`payouts`)
+
+### Column definitions
+
+Migrations `005_payout_dead_letter.sql` and `007_payout_attempt_counters_and_last_error.sql` enable operators to debug and investigate payout failures:
+
+| Column | Type | Purpose |
+| --- | --- | --- |
+| `failure_count` | `INTEGER` | Number of settlement attempts that failed for this payout (added by migration 005). |
+| `last_failure_at` | `TIMESTAMPTZ` | Timestamp of the most recent failed attempt (added by migration 005). |
+| `last_failure_reason` | `TEXT` | Error message from the most recent failure, for debugging and operator visibility (added by migration 007). |
+
+### Retry and dead-letter workflow
+
+1. **Initial payout:** Invoice is marked `paid` after Horizon webhook detection. Reconciliation inserts a payout row with `status = 'queued'` and all failure fields `NULL`.
+
+2. **Settlement failure:** When a settlement attempt fails (still not fully implemented in Rust), the `failure_reason` is captured and the payout status is set to `'failed'`.
+
+3. **Cron settle handler retry:** `GET /api/cron/settle` (with `Authorization: Bearer <CRON_SECRET>`) scans payouts with `status = 'failed'`:
+   - Increments `failure_count` by 1.
+   - Sets `last_failure_at = NOW()`.
+   - Sets `last_failure_reason` to the stored error message.
+   - If `failure_count < PAYOUT_DEAD_LETTER_THRESHOLD` (currently 5), resets status to `'queued'` for the next settlement attempt.
+   - If `failure_count >= 5`, escalates to `status = 'dead_lettered'` and inserts a row into `payout_dead_letters` for operator review.
+
+4. **Operator resolution:** Dead-lettered payouts require manual investigation and resolution (e.g., invalid destination key, network issues, insufficient funds). They do not auto-retry.
+
+### Indexing
+
+Migration `007` creates an index on `payouts(last_failure_at DESC NULLS LAST)` to support queries that discover recently-failed payouts for monitoring or manual retry workflows.
+
+### Example queries for operators
+
+```sql
+-- Find payouts that are not yet dead-lettered but have failed at least once:
+SELECT id, invoice_id, merchant_id, failure_count, last_failure_at, last_failure_reason
+FROM payouts
+WHERE failure_count > 0 AND status != 'dead_lettered'
+ORDER BY last_failure_at DESC;
+
+-- Find all dead-lettered payouts for a merchant:
+SELECT p.id, p.invoice_id, p.failure_count, p.last_failure_reason,
+       dl.created_at
+FROM payouts p
+INNER JOIN payout_dead_letters dl ON p.id = dl.payout_id
+WHERE p.merchant_id = $1
+ORDER BY dl.created_at DESC;
+```
+
+**Verification:** `cargo test` checks that migration 007 defines `last_failure_reason` and the index; apply migrations with `cargo run --bin migrate`.
+
 ## Database migrations
 
 SQL lives in `../usdc-payment-link-tool/migrations/`. Apply with `cargo run --bin migrate` from `rust-backend/`. The runner errors clearly if the migrations directory is missing or if a file’s SQL fails.
+
+### Clean Postgres migration test
+
+`cargo test` includes a clean-database migration test that is skipped unless `ASTROPAY_MIGRATION_TEST_ADMIN_DATABASE_URL` is set. Point that variable at a disposable admin/maintenance Postgres database with `CREATE DATABASE` privilege. The test creates a temporary database, applies the full SQL migration chain from scratch, verifies `schema_migrations` and the core tables, reruns the chain to check idempotency, then drops the temporary database.
+
+Example:
+
+```bash
+cd rust-backend
+ASTROPAY_MIGRATION_TEST_ADMIN_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo test migration_chain_applies_to_clean_postgres_database
+```
 
 **Invoice `metadata` (JSONB):** migration `003_invoice_metadata_jsonb_index_plan.sql` records the indexing policy—no speculative GIN until real filter queries exist—and sets `COMMENT ON COLUMN invoices.metadata` for DB catalog visibility. See the Next.js README for the same guidance.
 
@@ -100,6 +222,28 @@ The runner aborts with a clear error if that directory is missing (for example w
 
 **Verification:** `cargo test` (includes a guard that migration 002 defines the expected index names). With Postgres available, run `migrate` then inspect indexes, for example `psql "$DATABASE_URL" -c '\d sessions'`.
 
+## Treasury key custody
+
+`PLATFORM_TREASURY_SECRET_KEY` is the Ed25519 secret key that signs all
+outbound settlement transactions. It must never appear in logs, API
+responses, or the browser bundle.
+
+Full storage, rotation, and verification requirements are documented in
+[`docs/treasury-key-custody.md`](../docs/treasury-key-custody.md).
+
+**Quick rules:**
+- Load via `config.platform_treasury_secret_key` (`Option<String>`). A
+  missing key is not a startup error — settlement routes must check and
+  fail fast before signing.
+- Never log the value. Never include it in a JSON response.
+- Rotate when a team member with access leaves, when a leak is suspected,
+  or on a 90-day schedule for mainnet.
+- Update `PLATFORM_TREASURY_PUBLIC_KEY` and `PLATFORM_TREASURY_SECRET_KEY`
+  in the same deploy — a mismatch causes every settlement to fail.
+
+**Verify:** `cargo test` uses `platform_treasury_secret_key: None` in all
+fixtures, confirming the service boots and tests pass without a real key.
+
 ## Run locally
 
 ```bash
@@ -108,9 +252,57 @@ cargo run --bin migrate
 cargo run
 ```
 
+### Seed demo data
+
+After running migrations, populate the database with two demo merchants and
+sample invoices covering every lifecycle state (`pending`, `paid`, `settled`,
+`expired`, `failed`):
+
+```bash
+cargo run --bin seed
+```
+
+The script is idempotent — safe to run multiple times. Login credentials:
+
+| email | password |
+|---|---|
+| alice@demo.astropay.test | demo1234 |
+| bob@demo.astropay.test | demo1234 |
+
+Remove seed data with:
+```sql
+DELETE FROM merchants WHERE email LIKE '%@demo.astropay.test';
+```
+
 The service reads env vars from:
 
 - `rust-backend/.env.local`
 - `rust-backend/.env`
 - `../usdc-payment-link-tool/.env.local`
 - `../usdc-payment-link-tool/.env`
+
+## Webhook and reconciliation assumptions
+
+The full breakdown of what the webhook integration guarantees, what it does not, and how each failure mode is handled lives in:
+
+- [docs/reconciliation/webhook-assumptions.md](../docs/reconciliation/webhook-assumptions.md)
+
+Key points for contributors:
+
+- `POST /api/webhooks/stellar` trusts the caller's `transactionHash` — it does not verify against Horizon. Amount/asset/memo validation only happens in the cron reconcile path.
+- `GET /api/cron/reconcile` scans the most recent 50 payment operations on each invoice's destination account. Payments older than that window are not detected automatically — use `POST /api/cron/reconcile/replay` to rescan a single invoice.
+- `GET /api/cron/settle` is not implemented in Rust yet. The TypeScript route handles settlement in production.
+- All three payment-detection paths (`reconcile`, `webhook`, `replay`) converge on the same `WHERE status = 'pending'` guarded DB transaction, making double-fires safe.
+
+## `last_checkout_attempt_at` column (migration 005)
+
+Migration `005_invoice_last_checkout_attempt_at.sql` adds a nullable `TIMESTAMPTZ` column to `invoices`. It records when a buyer last loaded the checkout page for that invoice.
+
+- `NULL` means no checkout attempt has been observed (invoices created before this migration, or invoices never visited). Treat `NULL` and a past timestamp identically in application logic.
+- The column is intentionally nullable — no `NOT NULL` constraint — so the migration is safe to apply against existing rows without a backfill.
+- No index is created. Add one in a follow-up migration once a real `WHERE last_checkout_attempt_at > $1` query lands in application code.
+- The Rust `Invoice` struct and `from_row` mapping include the field. The reconcile and settle cron jobs do not write to it; only the checkout handler should update it.
+
+**Apply:** `cargo run --bin migrate`
+
+**Verify:** `cargo test checkout_attempt` (guards that the column is nullable, is `TIMESTAMPTZ`, and that no speculative index was added).

@@ -5,7 +5,7 @@ use deadpool_postgres::GenericClient;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rand::{RngCore, rngs::OsRng};
 use scrypt::{
-    Scrypt,
+    Params, Scrypt,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use uuid::Uuid;
@@ -19,7 +19,9 @@ use crate::{
 /// Validates `Authorization: Bearer <token>` for cron and webhook routes.
 pub fn authorize_cron_request(cron_secret: &str, headers: &HeaderMap) -> Result<(), AppError> {
     if cron_secret.is_empty() {
-        return Err(AppError::unauthorized("Unauthorized".to_string()));
+        return Err(AppError::unauthorized_code(
+            AuthErrorCode::CronSecretMismatch,
+        ));
     }
     let token = headers
         .get(header::AUTHORIZATION)
@@ -28,7 +30,9 @@ pub fn authorize_cron_request(cron_secret: &str, headers: &HeaderMap) -> Result<
     if token == Some(cron_secret) {
         Ok(())
     } else {
-        Err(AppError::unauthorized("Unauthorized".to_string()))
+        Err(AppError::unauthorized_code(
+            AuthErrorCode::CronSecretMismatch,
+        ))
     }
 }
 
@@ -41,9 +45,9 @@ pub fn wallet_keys_conflict_with_existing(
     stellar: &str,
     settlement: &str,
 ) -> bool {
-    existing.iter().any(|(es, et)| {
-        *es == stellar || *es == settlement || *et == stellar || *et == settlement
-    })
+    existing
+        .iter()
+        .any(|(es, et)| *es == stellar || *es == settlement || *et == stellar || *et == settlement)
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -54,9 +58,13 @@ struct Claims {
 }
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
+    hash_password_with_params(password, Params::recommended())
+}
+
+fn hash_password_with_params(password: &str, params: Params) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut rand::thread_rng());
     Scrypt
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_customized(password.as_bytes(), None, None, params, &salt)
         .map(|hash| hash.to_string())
         .map_err(|_| AppError::Internal)
 }
@@ -108,6 +116,51 @@ where
     Ok(session_cookie(config, token))
 }
 
+/// Extends an existing valid session by 30 days and returns a fresh cookie.
+/// Requires the session row to still be unexpired; does not create a new session row.
+pub async fn refresh_session<C>(
+    client: &C,
+    config: &Config,
+    token: &str,
+) -> Result<Option<Cookie<'static>>, AppError>
+where
+    C: GenericClient + Sync,
+{
+    let decoded = match decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(config.session_secret.as_bytes()),
+        &Validation::default(),
+    ) {
+        Ok(d) => d,
+        Err(_) => return Ok(None),
+    };
+
+    let updated = client
+        .execute(
+            "UPDATE sessions SET expires_at = NOW() + interval '30 days'
+             WHERE id = $1 AND merchant_id = $2 AND expires_at > NOW()",
+            &[&decoded.claims.sid, &decoded.claims.sub],
+        )
+        .await?;
+
+    if updated == 0 {
+        return Ok(None);
+    }
+
+    let new_exp = (Utc::now() + Duration::days(30)).timestamp() as usize;
+    let new_claims = Claims {
+        sid: decoded.claims.sid,
+        sub: decoded.claims.sub,
+        exp: new_exp,
+    };
+    let new_token = encode(
+        &Header::default(),
+        &new_claims,
+        &EncodingKey::from_secret(config.session_secret.as_bytes()),
+    )?;
+    Ok(Some(session_cookie(config, new_token)))
+}
+
 pub fn clear_session_cookie(config: &Config) -> Cookie<'static> {
     let mut cookie = session_cookie(config, String::new());
     cookie.make_removal();
@@ -116,9 +169,8 @@ pub fn clear_session_cookie(config: &Config) -> Cookie<'static> {
 
 /// Resolves the merchant for a signed session cookie.
 ///
-/// The nested `EXISTS` probes `sessions` by **`id` (JWT `sid`)** and `merchant_id` (`sub`). PostgreSQL uses the session **primary key**
-/// for that probe; `expires_at > NOW()` is evaluated on the single fetched row. Bulk expiry deletes are a separate workload and rely on
-/// btree indexes on `expires_at` (see migrations `002_session_expiry_indexes.sql`).
+/// The nested `EXISTS` probes `sessions` by **`id` (JWT `sid`)** and `merchant_id` (`sub`).
+/// `expires_at > NOW()` is evaluated on the single fetched row.
 pub async fn current_merchant<C>(
     client: &C,
     config: &Config,
@@ -157,22 +209,6 @@ where
     Ok(row.map(|row| Merchant::from_row(&row)))
 }
 
-/// Validates `Authorization: Bearer <token>` against the configured cron/webhook secret.
-pub fn authorize_cron_request(cron_secret: &str, headers: &HeaderMap) -> Result<(), AppError> {
-    if cron_secret.is_empty() {
-        return Err(AppError::unauthorized_code(AuthErrorCode::CronSecretMismatch));
-    }
-    let token = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if token == Some(cron_secret) {
-        Ok(())
-    } else {
-        Err(AppError::unauthorized_code(AuthErrorCode::CronSecretMismatch))
-    }
-}
-
 fn session_cookie(config: &Config, token: String) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE, token))
         .path("/")
@@ -185,25 +221,46 @@ fn session_cookie(config: &Config, token: String) -> Cookie<'static> {
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
+    use scrypt::Params;
 
     use super::{
-        generate_memo, generate_public_id, hash_password, session_cookie, verify_password,
-        wallet_keys_conflict_with_existing,
-        authorize_cron_request, generate_memo, generate_public_id, hash_password, session_cookie,
-        verify_password,
+        authorize_cron_request, generate_memo, generate_public_id, hash_password_with_params,
+        session_cookie, verify_password, wallet_keys_conflict_with_existing,
     };
     use crate::config::Config;
 
-    fn g_key(fill: char) -> String {
-        format!("G{}", std::iter::repeat(fill).take(55).collect::<String>())
+    fn secure_config() -> Config {
+        Config {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            app_url: "https://astropay.example.com".to_string(),
+            public_app_url: "https://astropay.example.com".to_string(),
+            database_url: "postgres://localhost/astropay".to_string(),
+            pgssl: "require".to_string(),
+            session_secret: "prod-secret".to_string(),
+            horizon_url: "https://horizon.stellar.org".to_string(),
+            network_passphrase: "Public Global Stellar Network ; September 2015".to_string(),
+            stellar_network: "MAINNET".to_string(),
+            asset_code: "USDC".to_string(),
+            asset_issuer: "ISSUER".to_string(),
+            platform_treasury_public_key: "TREASURY".to_string(),
+            platform_treasury_secret_key: None,
+            platform_fee_bps: 100,
+            invoice_expiry_hours: 24,
+            cron_secret: "cron".to_string(),
+            secure_cookies: true,
+            login_rate_ip_window_secs: 600,
+            login_rate_ip_max: 80,
+            login_rate_email_window_secs: 900,
+            login_rate_email_fail_max: 12,
+        }
     }
 
-    fn sample_config() -> Config {
+    fn insecure_config() -> Config {
         Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_url: "http://localhost:3000".to_string(),
             public_app_url: "http://localhost:3000".to_string(),
-            database_url: "postgres://postgres:postgres@localhost:5432/astropay".to_string(),
+            database_url: "postgres://localhost/astropay".to_string(),
             pgssl: "disable".to_string(),
             session_secret: "secret".to_string(),
             horizon_url: "https://horizon-testnet.stellar.org".to_string(),
@@ -224,12 +281,62 @@ mod tests {
         }
     }
 
+    fn g_key(fill: char) -> String {
+        format!("G{}", std::iter::repeat(fill).take(55).collect::<String>())
+    }
+
+    // --- secure cookie flag ---
+
+    #[test]
+    fn session_cookie_secure_flag_set_when_config_is_true() {
+        let cookie = session_cookie(&secure_config(), "tok".to_string());
+        assert!(
+            cookie.secure().unwrap_or(false),
+            "secure flag must be set for https config"
+        );
+    }
+
+    #[test]
+    fn session_cookie_secure_flag_unset_when_config_is_false() {
+        let cookie = session_cookie(&insecure_config(), "tok".to_string());
+        assert!(
+            !cookie.secure().unwrap_or(true),
+            "secure flag must be absent for http config"
+        );
+    }
+
+    #[test]
+    fn session_cookie_is_always_http_only() {
+        assert!(
+            session_cookie(&secure_config(), "t".to_string())
+                .http_only()
+                .unwrap_or(false)
+        );
+        assert!(
+            session_cookie(&insecure_config(), "t".to_string())
+                .http_only()
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn session_cookie_name_and_path_are_stable() {
+        let cookie = session_cookie(&insecure_config(), "token".to_string());
+        assert_eq!(cookie.name(), "astropay_session");
+        assert_eq!(cookie.path(), Some("/"));
+    }
+
+    // --- password hashing ---
+
     #[test]
     fn hash_and_verify_round_trip() {
-        let hashed = hash_password("correct horse battery staple").unwrap();
+        let params = Params::new(10, 1, 1, 32).unwrap();
+        let hashed = hash_password_with_params("correct horse battery staple", params).unwrap();
         assert!(verify_password("correct horse battery staple", &hashed));
         assert!(!verify_password("wrong-password", &hashed));
     }
+
+    // --- id generation ---
 
     #[test]
     fn generated_ids_have_expected_prefixes_and_lengths() {
@@ -241,16 +348,49 @@ mod tests {
         assert_eq!(memo.len(), 18);
     }
 
-    #[test]
-    fn session_cookie_is_http_only() {
-        let cookie = session_cookie(&sample_config(), "token".to_string());
-        assert_eq!(cookie.name(), "astropay_session");
-        assert_eq!(cookie.value(), "token");
-        assert!(cookie.http_only().unwrap_or(false));
-    }
+    // --- cron auth ---
 
     #[test]
     fn authorize_cron_accepts_matching_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer mysecret"),
+        );
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer mysecret"));
+        assert!(authorize_cron_request("mysecret", &headers).is_ok());
+    }
+
+    #[test]
+    fn authorize_cron_rejects_wrong_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong"),
+        );
+        assert!(authorize_cron_request("cron_secret", &headers).is_err());
+    }
+
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer wrong"));
+        assert!(authorize_cron_request("cron_secret", &headers).is_err());
+    }
+
+    #[test]
+    fn authorize_cron_rejects_when_secret_not_configured() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer anything"));
+        assert!(authorize_cron_request("", &headers).is_err());
+    }
+
+    #[test]
+    fn authorize_cron_rejects_missing_header() {
+        assert!(authorize_cron_request("secret", &HeaderMap::new()).is_err());
+    }
+
+    // --- wallet key conflict ---
+
+    #[test]
+    fn authorize_cron_rejects_empty_configured_secret() {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -260,11 +400,34 @@ mod tests {
     }
 
     #[test]
-    fn authorize_cron_rejects_empty_configured_secret() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer x"),
+    fn authorize_cron_rejects_missing_header() {
+        assert!(authorize_cron_request("secret", &HeaderMap::new()).is_err());
+    }
+
+    // --- wallet key conflict ---
+
+    #[test]
+    fn authorize_cron_rejects_missing_header() {
+        assert!(authorize_cron_request("secret", &HeaderMap::new()).is_err());
+    }
+
+    // --- wallet key conflict ---
+
+    #[test]
+    fn authorize_cron_rejects_missing_header() {
+        assert!(authorize_cron_request("secret", &HeaderMap::new()).is_err());
+    }
+
+    // --- wallet key conflict ---
+
+    #[test]
+    fn authorize_cron_rejects_missing_header() {
+        assert!(authorize_cron_request("secret", &HeaderMap::new()).is_err());
+    }
+
+    // --- wallet key conflict ---
+
+    #[test]
     fn wallet_conflict_detects_stellar_reuse() {
         let s1 = g_key('1');
         let t1 = g_key('2');
@@ -297,22 +460,5 @@ mod tests {
             t1.as_str(),
             s2.as_str(),
         ));
-    fn authorize_cron_rejects_wrong_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer wrong"),
-        );
-        assert!(authorize_cron_request("cron_secret", &headers).is_err());
-    }
-
-    #[test]
-    fn authorize_cron_rejects_when_secret_not_configured() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer anything"),
-        );
-        assert!(authorize_cron_request("", &headers).is_err());
     }
 }
