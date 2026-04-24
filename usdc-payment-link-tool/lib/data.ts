@@ -104,18 +104,36 @@ export const getInvoiceById = async (id: string) => {
   return result.rows[0] || null;
 };
 
+export const isTransactionHashAlreadyProcessed = async (transactionHash: string): Promise<boolean> => {
+  const result = await query<{ id: string }>(
+    'SELECT id FROM invoices WHERE transaction_hash = $1',
+    [transactionHash],
+  );
+  return result.rows.length > 0;
+};
+
 export const markInvoicePaid = async ({ invoiceId, transactionHash, payload }: {
   invoiceId: string;
   transactionHash: string;
   payload: Record<string, unknown>;
 }): Promise<MarkInvoicePaidPayoutResult> => {
   return withTransaction(async (client) => {
-    const updated = await client.query(
-      `UPDATE invoices
-       SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-       WHERE id = $1 AND status = 'pending'`,
-      [invoiceId, transactionHash],
-    );
+    let updated;
+    try {
+      updated = await client.query(
+        `UPDATE invoices
+         SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
+         WHERE id = $1 AND status = 'pending'`,
+        [invoiceId, transactionHash],
+      );
+    } catch (err: any) {
+      // Unique-violation (23505) means a concurrent delivery already committed
+      // this hash. Treat as already-processed rather than an error.
+      if (err?.code === '23505') {
+        return { payoutQueued: false, payoutSkipReason: null };
+      }
+      throw err;
+    }
     if (updated.rowCount === 0) {
       return { payoutQueued: false, payoutSkipReason: null };
     }
