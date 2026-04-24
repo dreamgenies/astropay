@@ -99,6 +99,35 @@ struct RateLimitedInner {
     retry_after_seconds: u64,
 }
 
+/// Classifies an error by its root cause so failures can be grouped in logs
+/// and metrics without inspecting the full error message.
+///
+/// - `User`     — the caller sent invalid input or lacks permission.
+/// - `System`   — an internal failure (DB, JWT, unexpected state).
+/// - `Upstream` — a third-party dependency (Horizon) is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ErrorClass {
+    User,
+    System,
+    Upstream,
+}
+
+impl AppError {
+    /// Returns the [`ErrorClass`] for this error variant.
+    pub fn classify(&self) -> ErrorClass {
+        match self {
+            Self::BadRequest(_)
+            | Self::Unauthorized(_)
+            | Self::RateLimited { .. }
+            | Self::NotFound(_)
+            | Self::Conflict(_) => ErrorClass::User,
+            Self::HorizonUnavailable => ErrorClass::Upstream,
+            Self::Internal | Self::NotImplemented(_) => ErrorClass::System,
+        }
+    }
+}
+
 impl AppError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest(message.into())
@@ -189,7 +218,6 @@ impl IntoResponse for AppError {
                 Json(LegacyErrorBody {
                     error: "Unexpected error".to_string(),
                 }),
-                Json(LegacyErrorBody { error: "Unexpected error".to_string() }),
             )
                 .into_response(),
         }
@@ -254,5 +282,53 @@ mod tests {
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["error"]["code"], "AUTH_RATE_LIMITED");
         assert_eq!(v["error"]["retryAfterSeconds"], 42);
+    }
+
+    // --- error classification ---
+
+    #[test]
+    fn user_errors_classify_as_user() {
+        use super::{AppError, ErrorClass};
+        assert_eq!(AppError::bad_request("x").classify(), ErrorClass::User);
+        assert_eq!(
+            AppError::unauthorized_code(AuthErrorCode::SessionRequired).classify(),
+            ErrorClass::User
+        );
+        assert_eq!(AppError::rate_limited(60).classify(), ErrorClass::User);
+        assert_eq!(AppError::not_found("x").classify(), ErrorClass::User);
+        assert_eq!(AppError::conflict("x").classify(), ErrorClass::User);
+    }
+
+    #[test]
+    fn horizon_unavailable_classifies_as_upstream() {
+        use super::{AppError, ErrorClass};
+        assert_eq!(AppError::HorizonUnavailable.classify(), ErrorClass::Upstream);
+    }
+
+    #[test]
+    fn system_errors_classify_as_system() {
+        use super::{AppError, ErrorClass};
+        assert_eq!(AppError::Internal.classify(), ErrorClass::System);
+        assert_eq!(
+            AppError::not_implemented("x").classify(),
+            ErrorClass::System
+        );
+    }
+
+    #[test]
+    fn error_class_serializes_lowercase() {
+        use super::ErrorClass;
+        assert_eq!(
+            serde_json::to_value(ErrorClass::User).unwrap(),
+            serde_json::json!("user")
+        );
+        assert_eq!(
+            serde_json::to_value(ErrorClass::System).unwrap(),
+            serde_json::json!("system")
+        );
+        assert_eq!(
+            serde_json::to_value(ErrorClass::Upstream).unwrap(),
+            serde_json::json!("upstream")
+        );
     }
 }

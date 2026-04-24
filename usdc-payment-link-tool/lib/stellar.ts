@@ -117,6 +117,26 @@ export const SETTLEMENT_MEMO_MAX_BYTES = 28;
 export const buildSettlementMemo = (publicId: string): string =>
   `s:${publicId}`.slice(0, SETTLEMENT_MEMO_MAX_BYTES);
 
+/**
+ * Checks whether a submitted Stellar transaction has been confirmed on-chain.
+ *
+ * Returns:
+ *   'confirmed' — transaction succeeded on Stellar
+ *   'failed'    — transaction was included in a ledger but failed
+ *   'pending'   — transaction not yet found in Horizon (still propagating)
+ *
+ * Throws on unexpected network errors so callers can surface them.
+ */
+export const checkPayoutTxConfirmed = async (txHash: string): Promise<'confirmed' | 'failed' | 'pending'> => {
+  try {
+    const tx = await getServer().transactions().transaction(txHash).call();
+    return tx.successful ? 'confirmed' : 'failed';
+  } catch (err: any) {
+    if (err?.response?.status === 404) return 'pending';
+    throw err;
+  }
+};
+
 export const buildSettlementXdr = async ({ invoice, destination }: { invoice: Invoice; destination: string }) => {
   if (!env.platformTreasurySecretKey) throw new Error('Settlement signing key is missing');
   const server = getServer();

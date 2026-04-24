@@ -237,6 +237,9 @@ mod tests {
             sql.contains("ALTER TABLE payouts"),
             "migration must alter payouts table (idempotent with IF NOT EXISTS)"
         );
+    }
+
+    #[test]
     fn queued_payouts_partial_index_migration_is_correct() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/007_payouts_queued_partial_index.sql");

@@ -33,6 +33,9 @@ jobs:
       - name: Run typecheck
         run: npm run typecheck
 
+      - name: Run lint
+        run: npm run lint
+
   rust-checks:
     name: Rust Checks
     runs-on: ubuntu-latest
@@ -45,6 +48,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -53,6 +58,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
 
       - name: Run tests
         run: cargo test

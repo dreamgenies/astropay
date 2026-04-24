@@ -137,6 +137,22 @@ Migration `004_cron_runs.sql` adds an append-only table keyed by `job_type` (`re
 
 **Verification:** `cargo test` checks that `004_cron_runs.sql` defines the table and index; apply migrations with `cargo run --bin migrate` before relying on audit rows in development.
 
+## Structured logging
+
+Set `LOG_FORMAT=json` to emit machine-readable JSON logs for aggregation. The default remains human-readable local output so local development is not forced into JSON-only logs.
+
+JSON mode keeps standard tracing metadata and request context, including fields such as:
+
+- `timestamp`
+- `level`
+- `target`
+- `message`
+- HTTP request span fields such as method, URI, status, and latency when logs come from the request trace layer
+
+Do not add secrets, wallet private keys, cookies, or bearer tokens as structured fields.
+
+**Verification:** `cargo test` includes a unit test that writes a JSON log line and checks for stable fields like `level`, `target`, `message`, and a sample operation field.
+
 ## Payout settlement retry tracking (`payouts`)
 
 ### Column definitions

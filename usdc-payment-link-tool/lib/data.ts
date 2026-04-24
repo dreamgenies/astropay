@@ -197,112 +197,26 @@ export const pendingInvoices = async ({
     [limit],
   );
   return result.rows;
-const RECONCILE_PAGE_SIZE = 100;
-const SETTLE_PAGE_SIZE = 100;
-
-/**
- * Returns ALL pending invoices using keyset pagination so backlogs larger than
- * a single page are fully drained in one call without manual babysitting.
- *
- * Cursor: (created_at, id) — stable and covered by the existing status + created_at indexes.
- * Each page fetches up to RECONCILE_PAGE_SIZE rows; iteration stops when a page is smaller
- * than the page size (last page reached).
- */
-export const pendingInvoices = async (): Promise<Invoice[]> => {
-  const all: Invoice[] = [];
-  let cursorCreatedAt = new Date(0).toISOString();
-  let cursorId = '00000000-0000-0000-0000-000000000000';
-
-  while (true) {
-    const result = await query<Invoice>(
-      `SELECT * FROM invoices
-       WHERE status = 'pending'
-         AND (created_at, id) > ($1, $2)
-       ORDER BY created_at ASC, id ASC
-       LIMIT $3`,
-      [cursorCreatedAt, cursorId, RECONCILE_PAGE_SIZE],
-    );
-    const rows = result.rows;
-    all.push(...rows);
-
-    if (rows.length < RECONCILE_PAGE_SIZE) break;
-
-    // Advance cursor to the last row on this page.
-    const last = rows[rows.length - 1];
-    cursorCreatedAt = last.created_at;
-    cursorId = last.id;
-  }
-
-  return all;
 };
 
-export const queuedPayouts = async () => {
-  // Apply exponential backoff for failed payouts: only return a failed payout
-  // once its backoff window has elapsed since last_failure_at.
-  //
-  // Backoff schedule (matches Rust settle.rs):
-  //   failure_count = 1 → 5 min
-  //   failure_count = 2 → 15 min
-  //   failure_count = 3 → 1 hour
-  //   failure_count = 4 → 4 hours
-  //   failure_count ≥ 5 → dead-lettered (excluded here)
-  const result = await query<any>(
-    `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents, invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
-     FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
-     WHERE payouts.status = 'queued'
-        OR (
-          payouts.status = 'failed'
-          AND payouts.last_failure_at IS NOT NULL
-          AND payouts.last_failure_at + (
-            CASE payouts.failure_count
-              WHEN 1 THEN INTERVAL '5 minutes'
-              WHEN 2 THEN INTERVAL '15 minutes'
-              WHEN 3 THEN INTERVAL '1 hour'
-              WHEN 4 THEN INTERVAL '4 hours'
-              ELSE NULL
-            END
-          ) <= NOW()
-        )
-     ORDER BY payouts.created_at ASC LIMIT 50`,
-/**
- * Returns ALL queued/failed payouts using keyset pagination so backlogs larger
- * than a single page are fully drained in one call.
- *
- * Cursor: (created_at, id) — stable across pages.
- */
-export const queuedPayouts = async (): Promise<any[]> => {
-  const all: any[] = [];
-  let cursorCreatedAt = new Date(0).toISOString();
-  let cursorId = '00000000-0000-0000-0000-000000000000';
-
-  while (true) {
-    const result = await query<any>(
-      `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents,
-              invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
-       FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
-       WHERE payouts.status IN ('queued', 'failed')
-         AND (payouts.created_at, payouts.id) > ($1, $2)
-       ORDER BY payouts.created_at ASC, payouts.id ASC
-       LIMIT $3`,
-      [cursorCreatedAt, cursorId, SETTLE_PAGE_SIZE],
-    );
-    const rows = result.rows;
-    all.push(...rows);
-
-    if (rows.length < SETTLE_PAGE_SIZE) break;
-
-    const last = rows[rows.length - 1];
-    cursorCreatedAt = last.created_at;
-    cursorId = last.id;
-  }
-
-  return all;
 export const queuedPayouts = async (limit = 50) => {
   const result = await query<any>(
     `SELECT payouts.*, invoices.public_id, invoices.net_amount_cents, invoices.asset_code, invoices.asset_issuer, invoices.id as invoice_id_ref
      FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
      WHERE payouts.status IN ('queued','failed') ORDER BY payouts.created_at ASC LIMIT $1`,
     [limit],
+  );
+  return result.rows;
+};
+
+/** Returns payouts that have been submitted to Stellar but not yet confirmed as settled. */
+export const submittedPayouts = async () => {
+  const result = await query<any>(
+    `SELECT payouts.*, invoices.public_id, invoices.id as invoice_id_ref
+     FROM payouts JOIN invoices ON invoices.id = payouts.invoice_id
+     WHERE payouts.status = 'submitted'
+       AND payouts.transaction_hash IS NOT NULL
+     ORDER BY payouts.created_at ASC`,
   );
   return result.rows;
 };

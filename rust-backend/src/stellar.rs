@@ -1,10 +1,38 @@
 use chrono::{DateTime, Utc};
+use reqwest::{Client, Response, StatusCode};
+use serde::Deserialize;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use stellar_strkey::ed25519::PublicKey as Ed25519PublicKey;
+use tokio::time::{Duration, sleep};
+use tracing::warn;
 
 use crate::{config::Config, error::AppError, models::Invoice};
 
+const BACKOFF_BASE_MS: u64 = 500;
+const MAX_RETRIES: u32 = 4;
+
+/// GET `url` with exponential backoff on HTTP 429. Logs each throttle event.
+async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
+    let mut delay_ms = BACKOFF_BASE_MS;
+    for attempt in 0..=MAX_RETRIES {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| AppError::Internal)?;
+        if resp.status() != StatusCode::TOO_MANY_REQUESTS {
+            return resp.error_for_status().map_err(|_| AppError::Internal);
+        }
+        if attempt == MAX_RETRIES {
+            warn!(url, "horizon rate-limited after {} retries, giving up", MAX_RETRIES);
+            return Err(AppError::Internal);
+        }
+        warn!(url, attempt, delay_ms, "horizon 429 — backing off");
+        sleep(Duration::from_millis(delay_ms)).await;
+        delay_ms *= 2;
+    }
+    Err(AppError::Internal)
 /// Maximum bytes for a Stellar text memo (protocol limit).
 pub const SETTLEMENT_MEMO_MAX_BYTES: usize = 28;
 
@@ -30,7 +58,7 @@ pub struct PaymentMatch {
 }
 
 /// Emitted when a payment's amount matches an invoice but the asset differs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AssetMismatch {
     pub hash: String,
     pub received_asset_code: String,
@@ -46,6 +74,11 @@ pub struct MemoMismatch {
     pub hash: String,
     pub received_memo: String,
     pub expected_memo: String,
+#[derive(Debug)]
+pub enum TransactionStatus {
+    Success,
+    Failed,
+    NotFound,
 }
 
 /// Result of scanning Horizon payments for an invoice.
@@ -54,6 +87,28 @@ pub enum PaymentScanResult {
     AssetMismatch(AssetMismatch),
     MemoMismatch(MemoMismatch),
     NotFound,
+}
+
+/// Verifies if a transaction hash has been successfully committed on-chain.
+pub async fn confirm_transaction(
+    config: &Config,
+    tx_hash: &str,
+) -> Result<TransactionStatus, AppError> {
+    let url = format!(
+        "{}/transactions/{}",
+        config.horizon_url.trim_end_matches('/'),
+        tx_hash
+    );
+    let resp = Client::new().get(url).send().await.map_err(|_| AppError::Internal)?;
+    if resp.status() == 404 {
+        return Ok(TransactionStatus::NotFound);
+    }
+    let tx: serde_json::Value = resp.json().await.map_err(|_| AppError::Internal)?;
+    if tx.get("successful").and_then(|v| v.as_bool()) == Some(true) {
+        Ok(TransactionStatus::Success)
+    } else {
+        Ok(TransactionStatus::Failed)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,13 +201,8 @@ pub async fn find_payment_for_invoice(
         invoice.destination_public_key
     );
     let client = Client::new();
-    let page = client
-        .get(payments_url)
-        .send()
-        .await
-        .map_err(|_| AppError::Internal)?
-        .error_for_status()
-        .map_err(|_| AppError::Internal)?
+    let page = horizon_get(&client, &payments_url)
+        .await?
         .json::<PaymentsPage>()
         .await
         .map_err(|_| AppError::Internal)?;
@@ -193,13 +243,8 @@ pub async fn find_payment_for_invoice(
             config.horizon_url.trim_end_matches('/'),
             record.transaction_hash
         );
-        let tx = client
-            .get(tx_url)
-            .send()
-            .await
-            .map_err(|_| AppError::Internal)?
-            .error_for_status()
-            .map_err(|_| AppError::Internal)?
+        let tx = horizon_get(&client, &tx_url)
+            .await?
             .json::<HorizonTransaction>()
             .await
             .map_err(|_| AppError::Internal)?;
@@ -291,7 +336,7 @@ mod tests {
         is_valid_account_public_key, payment_matches_invoice,
     };
     use crate::{
-        config::Config,
+        config::{Config, LogFormat},
         horizon_fixtures::{
             ASSET_CODE, ASSET_ISSUER, DESTINATION_ACCOUNT, INVOICE_AMOUNT, INVOICE_MEMO,
             horizon_payment_cases,
@@ -352,6 +397,12 @@ mod tests {
             login_rate_ip_max: 80,
             login_rate_email_window_secs: 900,
             login_rate_email_fail_max: 12,
+            reconcile_scan_limit: 100,
+            reconcile_scan_window_hours: 0,
+            log_format: LogFormat::Human,
+            reconcile_scan_window_hours: 24,
+            archive_retention_days: 30,
+            reconcile_scan_window_hours: 0,
         }
     }
 
@@ -471,6 +522,19 @@ mod tests {
         let memo = super::build_settlement_memo("inv_short");
         assert_eq!(memo, "s:inv_short");
         assert!(memo.len() <= super::SETTLEMENT_MEMO_MAX_BYTES);
+    }
+
+    #[test]
+    fn backoff_delay_doubles_each_attempt() {
+        let mut delay = super::BACKOFF_BASE_MS;
+        let delays: Vec<u64> = (0..super::MAX_RETRIES)
+            .map(|_| {
+                let d = delay;
+                delay *= 2;
+                d
+            })
+            .collect();
+        assert_eq!(delays, vec![500, 1000, 2000, 4000]);
     }
 
     #[test]

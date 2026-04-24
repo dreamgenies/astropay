@@ -1,8 +1,8 @@
 use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
+use tracing::warn;
 
 use crate::{
-    AppState, auth::authorize_cron_request, error::AppError, models::StellarWebhookRequest,
     AppState,
     auth::authorize_cron_request,
     error::AppError,
@@ -31,6 +31,20 @@ pub async fn stellar_webhook(
 
     let mut client = state.pool.get().await?;
 
+    // Store raw payload with source metadata for audit/debugging (AP-160).
+    let raw_body = json!({
+        "publicId": payload.public_id,
+        "transactionHash": payload.transaction_hash,
+        "rest": payload.rest,
+    });
+    if let Err(e) = client
+        .execute(
+            "INSERT INTO webhook_raw_payloads (source, payload) VALUES ($1, $2)",
+            &[&"stellar", &tokio_postgres::types::Json(&raw_body)],
+        )
+        .await
+    {
+        warn!(error = %e, "webhook_raw_payloads insert failed");
     // Idempotency check: if this transaction_hash is already recorded on any
     // invoice, the payment was already processed. Return success without
     // mutating state so duplicate deliveries are safe.
@@ -190,6 +204,18 @@ pub async fn stellar_webhook(
     })))
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn raw_payload_json_includes_all_fields() {
+        let body = serde_json::json!({
+            "publicId": "inv_abc",
+            "transactionHash": "deadbeef",
+            "rest": { "amount": "10.00" },
+        });
+        assert_eq!(body["publicId"], "inv_abc");
+        assert_eq!(body["transactionHash"], "deadbeef");
+        assert!(body["rest"].is_object());
 /// Returns true when the postgres error is a unique-constraint violation (SQLSTATE 23505).
 fn is_unique_violation(e: &tokio_postgres::Error) -> bool {
     e.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION)

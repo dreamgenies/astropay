@@ -23,10 +23,16 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
         <p>Gross: <strong>{centsToUsd(invoice.gross_amount_cents)}</strong></p>
         <p>Platform fee: <strong>{centsToUsd(invoice.platform_fee_cents)}</strong></p>
         <p>Merchant net: <strong>{centsToUsd(invoice.net_amount_cents)}</strong></p>
-        <div className="copy-row"><span className="muted small">ID:</span><span className="mono muted small">{invoice.id}</span><CopyButton value={invoice.id} /></div>
         <div className="copy-row"><span className="muted small">Public ID:</span><span className="mono muted small">{invoice.public_id}</span><CopyButton value={invoice.public_id} /></div>
-        <div className="copy-row"><span className="muted">Memo:</span><span className="mono muted">{invoice.memo}</span><CopyButton value={invoice.memo} /></div>
-        {invoice.checkout_url ? <div className="copy-row"><span className="muted">Public link:</span><span className="mono muted small">{invoice.checkout_url}</span><CopyButton value={invoice.checkout_url} /></div> : null}
+        {/* AP-003: collapsible metadata panel for technical / debugging details */}
+        <details>
+          <summary className="muted small" style={{ cursor: 'pointer' }}>Technical details</summary>
+          <div className="stack" style={{ marginTop: '0.5rem' }}>
+            <div className="copy-row"><span className="muted small">ID:</span><span className="mono muted small">{invoice.id}</span><CopyButton value={invoice.id} /></div>
+            <div className="copy-row"><span className="muted">Memo:</span><span className="mono muted">{invoice.memo}</span><CopyButton value={invoice.memo} /></div>
+            {invoice.checkout_url ? <div className="copy-row"><span className="muted">Public link:</span><span className="mono muted small">{invoice.checkout_url}</span><CopyButton value={invoice.checkout_url} /></div> : null}
+          </div>
+        </details>
         <p className="muted">Created: {isoToLocal(invoice.created_at)}</p>
         <p className="muted">Expires: {isoToLocal(invoice.expires_at)}</p>
         <div className="row">

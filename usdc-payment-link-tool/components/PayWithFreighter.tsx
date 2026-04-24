@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { isConnected, requestAccess, signTransaction } from '@stellar/freighter-api';
 import { PendingSettlementBanner } from './PendingSettlementBanner';
 import { PaymentFailurePanel } from '@/components/PaymentFailurePanel';
@@ -25,6 +25,8 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
   const [status, setStatus] = useState(initialStatus);
   const [failure, setFailure] = useState<FailureState | null>(null);
   const [loading, setLoading] = useState(false);
+  // Ref-based guard: prevents duplicate in-flight pay attempts from rapid clicks (AP-005).
+  const inFlight = useRef(false);
 
   const failureView = useMemo(
     () => (failure ? resolveCheckoutFailure(failure.message, failure.stage) : null),
@@ -77,12 +79,14 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
   }
 
   async function pay() {
+    // Synchronous ref guard prevents duplicate submissions from rapid/repeated clicks.
+    if (inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     setFailure(null);
     try {
       const payer = address || (await connect());
       if (!payer) {
-        setLoading(false);
         return;
       }
 
@@ -146,6 +150,7 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
         stage: 'build',
       });
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }
@@ -171,13 +176,13 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
       </div>
       {address ? <p className="muted">Payer: <span className="mono">{address}</span></p> : null}
       <PendingSettlementBanner status={status} />
-      {address ? (
-        <p className="muted">
-          Payer: <span className="mono">{address}</span>
-        </p>
+      {failureView ? (
+        <PaymentFailurePanel
+          view={failureView}
+          onDismiss={() => setFailure(null)}
+          onRetry={failure?.stage === 'wallet' ? () => void connect() : () => void pay()}
+        />
       ) : null}
-      {failureView ? <PaymentFailurePanel view={failureView} onDismiss={() => setFailure(null)} onRetry={failure?.stage === 'wallet' ? () => void connect() : () => void pay()} /> : null}
-      {failureView ? <PaymentFailurePanel view={failureView} onDismiss={() => setFailure(null)} /> : null}
     </div>
   );
 }
