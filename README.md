@@ -64,6 +64,13 @@ cargo run --bin migrate
 cargo run
 ```
 
+## CI checks
+
+GitHub Actions runs the repo as two independent jobs so one runtime cannot hide the other runtime's failure:
+
+- Next.js: `cd usdc-payment-link-tool && npm ci && npm test && npm run typecheck`
+- Rust: `cd rust-backend && cargo fmt --check && cargo test`
+
 ## Deployment reality
 
 If you are evaluating the repo for production-readiness, read:
@@ -85,6 +92,8 @@ The right reading is:
 Contributor planning now lives in:
 
 - [docs/issue-backlog/astropay-250-issues.md](docs/issue-backlog/astropay-250-issues.md)
+- [docs/observability/invoice-payout-lifecycle-metrics-spec.md](docs/observability/invoice-payout-lifecycle-metrics-spec.md)
+- [docs/database/schema-ownership.md](docs/database/schema-ownership.md)
 - [.github/ISSUE_TEMPLATE/backlog-item.md](.github/ISSUE_TEMPLATE/backlog-item.md)
 - [scripts/publish_issue_backlog.py](scripts/publish_issue_backlog.py)
 

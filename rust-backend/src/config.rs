@@ -28,6 +28,11 @@ pub struct Config {
     /// Sliding window (seconds) for failed logins per normalized email. `LOGIN_RATE_EMAIL_FAIL_MAX=0` disables.
     pub login_rate_email_window_secs: u64,
     pub login_rate_email_fail_max: u32,
+    /// Maximum number of pending invoices scanned per reconcile run. Defaults to 100.
+    pub reconcile_scan_limit: i64,
+    /// When > 0, reconcile only considers invoices created within this many hours.
+    /// Set to 0 (default) to scan all pending invoices regardless of age.
+    pub reconcile_scan_window_hours: i64,
 }
 
 impl Config {
@@ -80,6 +85,14 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(12),
+            reconcile_scan_limit: env::var("RECONCILE_SCAN_LIMIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100),
+            reconcile_scan_window_hours: env::var("RECONCILE_SCAN_WINDOW_HOURS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
         })
     }
 
@@ -115,6 +128,8 @@ mod tests {
             login_rate_ip_max: 80,
             login_rate_email_window_secs: 900,
             login_rate_email_fail_max: 12,
+            reconcile_scan_limit: 100,
+            reconcile_scan_window_hours: 0,
         }
     }
 
@@ -139,5 +154,32 @@ mod tests {
         assert_eq!(config.pgssl, "disable");
         assert!(!config.secure_cookies);
         assert!(config.platform_treasury_secret_key.is_none());
+    }
+
+    #[test]
+    fn reconcile_scan_limit_defaults_to_100() {
+        let config = sample_config();
+        assert_eq!(config.reconcile_scan_limit, 100);
+    }
+
+    #[test]
+    fn reconcile_scan_window_hours_defaults_to_zero() {
+        // 0 means no time-window filter — scan all pending invoices.
+        let config = sample_config();
+        assert_eq!(config.reconcile_scan_window_hours, 0);
+    }
+
+    #[test]
+    fn reconcile_scan_limit_can_be_overridden() {
+        let mut config = sample_config();
+        config.reconcile_scan_limit = 50;
+        assert_eq!(config.reconcile_scan_limit, 50);
+    }
+
+    #[test]
+    fn reconcile_scan_window_hours_can_be_set() {
+        let mut config = sample_config();
+        config.reconcile_scan_window_hours = 48;
+        assert_eq!(config.reconcile_scan_window_hours, 48);
     }
 }

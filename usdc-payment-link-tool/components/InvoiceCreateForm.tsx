@@ -28,6 +28,7 @@ export function InvoiceCreateForm() {
       <h1>New invoice</h1>
       <label><span>Description</span><textarea name="description" className="input" required /></label>
       <label><span>Amount in USD</span><input type="number" step="0.01" min="0.01" name="amountUsd" className="input" required /></label>
+      <p className="muted small">A platform fee is deducted from this amount. The payer sends the full gross amount; you receive the net.</p>
       {error ? <p className="error">{error}</p> : null}
       <button className="button" disabled={loading}>{loading ? 'Creating...' : 'Create invoice'}</button>
     </form>

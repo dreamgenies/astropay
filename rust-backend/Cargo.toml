@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+async-trait = "0.1"
 axum = "0.8.6"
 axum-extra = { version = "0.10.3", features = ["cookie"] }
 base64 = "0.22.1"

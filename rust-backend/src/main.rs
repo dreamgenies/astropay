@@ -3,8 +3,11 @@ mod config;
 mod db;
 mod error;
 mod handlers;
+#[cfg(test)]
+mod horizon_fixtures;
 mod login_rate_limit;
 mod models;
+mod money_state;
 mod settle;
 mod stellar;
 
@@ -53,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/login", post(handlers::auth::login))
         .route("/api/auth/logout", post(handlers::auth::logout))
         .route("/api/auth/me", get(handlers::auth::me))
+        .route("/api/auth/refresh", post(handlers::auth::refresh))
         .route(
             "/api/invoices",
             get(handlers::invoices::list_invoices).post(handlers::invoices::create_invoice),
@@ -68,6 +72,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/cron/reconcile", get(handlers::cron::reconcile))
         .route("/api/cron/settle", get(handlers::cron::settle))
+        .route(
+            "/api/cron/purge-sessions",
+            get(handlers::cron::purge_sessions),
+        )
+        .route("/api/cron/purge-sessions", get(handlers::cron::purge_sessions))
+        .route("/api/cron/payouts/:payout_id/replay", axum::routing::post(handlers::cron::replay_payout))
+        .route("/api/cron/orphan-payments", get(handlers::cron::orphan_payments))
         .route(
             "/api/webhooks/stellar",
             post(handlers::misc::stellar_webhook),

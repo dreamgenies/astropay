@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use axum::{Json, extract::{ConnectInfo, State}};
+use axum::{
+    Json,
+    extract::{ConnectInfo, State},
+};
 use axum_extra::extract::{CookieJar as ExtractedCookieJar, cookie::CookieJar};
 use serde_json::json;
 
@@ -8,7 +11,7 @@ use crate::{
     AppState,
     auth::{
         SESSION_COOKIE, clear_session_cookie, create_session, current_merchant, hash_password,
-        verify_password,
+        refresh_session, verify_password,
     },
     error::{AppError, AuthErrorCode},
     models::{LoginRequest, RegisterRequest},
@@ -85,10 +88,7 @@ pub async fn login(
         return Err(AppError::bad_request("Invalid payload"));
     }
 
-    state
-        .login_limiter
-        .check_ip(&addr.ip().to_string())
-        .await?;
+    state.login_limiter.check_ip(&addr.ip().to_string()).await?;
 
     let client = state.pool.get().await?;
     let row = client
@@ -101,15 +101,17 @@ pub async fn login(
         .await?;
     let Some(row) = row else {
         state.login_limiter.record_email_failure(&email_key).await?;
-        return Err(AppError::unauthorized("Invalid credentials".to_string()));
-        return Err(AppError::unauthorized_code(AuthErrorCode::InvalidCredentials));
+        return Err(AppError::unauthorized_code(
+            AuthErrorCode::InvalidCredentials,
+        ));
     };
     let merchant = crate::models::Merchant::from_row(&row);
     let password_hash: String = row.get("password_hash");
     if !verify_password(&payload.password, &password_hash) {
         state.login_limiter.record_email_failure(&email_key).await?;
-        return Err(AppError::unauthorized("Invalid credentials".to_string()));
-        return Err(AppError::unauthorized_code(AuthErrorCode::InvalidCredentials));
+        return Err(AppError::unauthorized_code(
+            AuthErrorCode::InvalidCredentials,
+        ));
     }
     let cookie = create_session(&client, &state.config, merchant.id).await?;
     state.login_limiter.clear_email_failures(&email_key).await;
@@ -146,6 +148,21 @@ pub async fn me(
     }
 }
 
+pub async fn refresh(
+    State(state): State<AppState>,
+    jar: ExtractedCookieJar,
+) -> Result<(CookieJar, Json<serde_json::Value>), AppError> {
+    let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_owned());
+    let Some(token) = token else {
+        return Err(AppError::unauthorized_code(AuthErrorCode::SessionRequired));
+    };
+    let client = state.pool.get().await?;
+    match refresh_session(&client, &state.config, &token).await? {
+        Some(cookie) => Ok((jar.add(cookie), Json(serde_json::json!({ "ok": true })))),
+        None => Err(AppError::unauthorized_code(AuthErrorCode::SessionRequired)),
+    }
+}
+
 fn validate_register(payload: &RegisterRequest) -> Result<(), AppError> {
     let stellar = payload.stellar_public_key.trim();
     let settlement = payload.settlement_public_key.trim();
@@ -153,10 +170,8 @@ fn validate_register(payload: &RegisterRequest) -> Result<(), AppError> {
         || payload.password.len() < 8
         || payload.business_name.len() < 2
         || payload.business_name.len() > 120
-        || !is_public_key(stellar)
-        || !is_public_key(settlement)
-        || !is_valid_account_public_key(&payload.stellar_public_key)
-        || !is_valid_account_public_key(&payload.settlement_public_key)
+        || !is_valid_account_public_key(stellar)
+        || !is_valid_account_public_key(settlement)
     {
         return Err(AppError::bad_request("Invalid payload"));
     }

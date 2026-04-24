@@ -5,9 +5,10 @@ import type { CheckoutFailureView } from '@/lib/paymentFailure';
 type Props = {
   view: CheckoutFailureView;
   onDismiss: () => void;
+  onRetry?: () => void;
 };
 
-export function PaymentFailurePanel({ view, onDismiss }: Props) {
+export function PaymentFailurePanel({ view, onDismiss, onRetry }: Props) {
   return (
     <div className="callout callout--danger stack" role="alert">
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -34,6 +35,11 @@ export function PaymentFailurePanel({ view, onDismiss }: Props) {
           <summary className="muted small">Technical detail</summary>
           <pre className="mono small technical-details__pre">{view.technical}</pre>
         </details>
+      ) : null}
+      {view.retryLabel && onRetry ? (
+        <button type="button" className="button" onClick={onRetry}>
+          {view.retryLabel}
+        </button>
       ) : null}
     </div>
   );

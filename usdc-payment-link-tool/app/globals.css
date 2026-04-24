@@ -15,6 +15,9 @@ main { max-width: 1120px; margin: 0 auto; padding: 32px 20px 64px; }
 .hero h1 { font-size: clamp(40px, 6vw, 80px); line-height: .95; margin: 0 0 12px; }
 .hero p { font-size: 18px; color: #cbd5e1; max-width: 760px; }
 .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.row .button { flex: 1 1 120px; }
+.qr-img { width: 100%; max-width: 280px; height: auto; display: block; }
+@media (max-width: 480px) { .qr-img { max-width: 100%; } }
 .muted { color: #94a3b8; }
 .error { color: #fca5a5; }
 .callout { border-radius: 16px; padding: 18px 20px; border: 1px solid rgba(148,163,184,.2); background: rgba(15,23,42,.65); }
@@ -38,3 +41,5 @@ hr { border: 0; border-top: 1px solid rgba(148,163,184,.12); }
 .skeleton { background: rgba(148,163,184,.1); border-radius: 8px; animation: skeleton-pulse 1.4s ease-in-out infinite; }
 .copy-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 @keyframes skeleton-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+.merchant-brand { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.merchant-brand__name { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.02em; }
