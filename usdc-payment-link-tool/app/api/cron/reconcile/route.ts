@@ -11,10 +11,12 @@ function authorized(request: Request) {
 
 export async function GET(request: Request) {
   if (!authorized(request)) return fail('Unauthorized', 401);
+
   let scanned = 0;
   const results: Array<Record<string, unknown>> = [];
   let success = true;
   let errorDetail: string | null = null;
+
   try {
     const invoices = await pendingInvoices();
     scanned = invoices.length;
@@ -25,32 +27,25 @@ export async function GET(request: Request) {
         results.push({ publicId: invoice.public_id, action: 'expired' });
         continue;
       }
+
       const payment = await findPaymentForInvoice(invoice);
       if (payment) {
-        await markInvoicePaid({ invoiceId: invoice.id, transactionHash: payment.hash, payload: payment.payment });
-        results.push({ publicId: invoice.public_id, action: 'paid', txHash: payment.hash });
+        const payout = await markInvoicePaid({
+          invoiceId: invoice.id,
+          transactionHash: payment.hash,
+          payload: payment.payment,
+        });
+        results.push({
+          publicId: invoice.public_id,
+          action: 'paid',
+          txHash: payment.hash,
+          payoutQueued: payout.payoutQueued,
+          payoutSkipReason: payout.payoutSkipReason,
+        });
       } else {
         results.push({ publicId: invoice.public_id, action: 'pending' });
       }
     }
-    const payment = await findPaymentForInvoice(invoice);
-    if (payment) {
-      const payout = await markInvoicePaid({
-        invoiceId: invoice.id,
-        transactionHash: payment.hash,
-        payload: payment.payment,
-      });
-      results.push({
-        publicId: invoice.public_id,
-        action: 'paid',
-        txHash: payment.hash,
-        payoutQueued: payout.payoutQueued,
-        payoutSkipReason: payout.payoutSkipReason,
-      });
-    } else {
-      results.push({ publicId: invoice.public_id, action: 'pending' });
-    }
-  }
 
     return ok({ scanned, results });
   } catch (error) {
