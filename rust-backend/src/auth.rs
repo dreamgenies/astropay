@@ -352,6 +352,22 @@ mod tests {
         assert_eq!(memo.len(), 18);
     }
 
+    #[test]
+    fn generate_public_id_matches_db_constraint_pattern() {
+        // Validates against the same pattern used in migration 016:
+        // CHECK (public_id ~ '^inv_[0-9a-f]{16}$')
+        for _ in 0..20 {
+            let id = generate_public_id();
+            assert!(id.starts_with("inv_"), "must start with inv_: {id}");
+            assert_eq!(id.len(), 20, "must be 20 chars: {id}");
+            let hex_part = &id[4..];
+            assert!(
+                hex_part.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                "body must be lowercase hex: {id}"
+            );
+        }
+    }
+
     // --- cron auth ---
 
     #[test]

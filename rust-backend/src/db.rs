@@ -395,4 +395,20 @@ mod checkout_attempt_tests {
             );
         }
     }
+
+    #[test]
+    fn invoice_public_id_format_migration_adds_check_constraint() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/016_invoice_public_id_format.sql");
+        let sql = std::fs::read_to_string(path).expect("read 016_invoice_public_id_format.sql");
+        assert!(sql.contains("ALTER TABLE invoices"), "must alter invoices table");
+        assert!(
+            sql.contains("invoices_public_id_format"),
+            "must name the constraint"
+        );
+        assert!(
+            sql.contains("inv_[0-9a-f]{16}"),
+            "must enforce inv_[0-9a-f]{{16}} pattern"
+        );
+    }
 }

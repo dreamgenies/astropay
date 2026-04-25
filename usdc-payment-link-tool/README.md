@@ -49,6 +49,8 @@ Indexes evolve across migrations: `001_init.sql` creates starter btree indexes; 
 ### invoices
 Stores hosted invoice details and lifecycle state.
 
+**`public_id` format** — `inv_[0-9a-f]{16}` (the prefix `inv_` followed by exactly 16 lowercase hex characters, e.g. `inv_3f8a1b2c4d5e6f7a`). Migration **`016_invoice_public_id_format.sql`** adds a `CHECK` constraint enforcing this shape at the database level. Both generators already produce conforming values (`generatePublicId()` in `lib/security.ts` and `generate_public_id()` in `rust-backend/src/auth.rs`).
+
 **`metadata` (JSONB)** — arbitrary key/value data for integrations. Today nothing in this repo filters invoices in SQL by `metadata`; default rows use a small object (for example `{"product":"ASTROpay"}`). Migration **`003_invoice_metadata_jsonb_index_plan.sql`** documents when to add expression indexes vs `GIN (metadata jsonb_path_ops)` vs key-specific btree indexes, and installs a `COMMENT ON COLUMN` pointer for operators. **Do not add JSONB indexes preemptively** (write amplification and unused GIN are common pitfalls); add a migration alongside the first real `WHERE metadata …` query.
 
 ### payment_events
