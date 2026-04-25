@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "playwright:install": "playwright install",
     "typecheck": "next typegen && tsc --noEmit --incremental false -p tsconfig.typecheck.json",
     "db:migrate": "node scripts/run-migrations.mjs"
   },
@@ -24,6 +26,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.40.0",
     "@types/node": "^22.10.1",
     "@types/pg": "^8.15.5",
     "@types/qrcode": "^1.5.5",
