@@ -151,6 +151,26 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn retention_policy_migration_defines_config_table_and_extends_job_type() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/013_retention_policy.sql");
+        let sql = std::fs::read_to_string(path).expect("read 013_retention_policy.sql");
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS retention_config"));
+        assert!(sql.contains("retain_days"));
+        assert!(sql.contains("'sessions'"));
+        assert!(sql.contains("'payment_events'"));
+        assert!(sql.contains("'purge_payment_events'"));
+        assert!(sql.contains("ON CONFLICT (table_name) DO NOTHING"));
+    }
+
+    #[test]
+    fn retention_indexes_migration_adds_payment_events_created_at_index() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/014_retention_indexes.sql");
+        let sql = std::fs::read_to_string(path).expect("read 014_retention_indexes.sql");
+        assert!(sql.contains("payment_events_created_at_idx"));
+        assert!(sql.contains("ON payment_events (created_at ASC)"));
+        assert!(sql.contains("CREATE INDEX IF NOT EXISTS"));
     fn invoice_paid_at_not_before_created_at_migration_defines_check_constraint() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/017_invoice_paid_at_not_before_created_at.sql");
