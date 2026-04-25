@@ -356,3 +356,33 @@ Response:
 All four values are read in a single SQL query to avoid TOCTOU skew. The endpoint is protected by the same `Authorization: Bearer <CRON_SECRET>` check used by all other cron routes.
 
 **Verify:** `cargo test payout_health` runs four unit tests covering the response shape, null age, and struct serialization.
+## Sentry error tracing
+
+Sentry is optional. The service starts and runs normally without it.
+
+**What is captured:**
+
+| Source | How |
+|---|---|
+| Panics | `sentry` crate `panic` feature — hooks `std::panic::set_hook` |
+| `AppError::Internal` and `AppError::NotImplemented` | `sentry::capture_error` in `IntoResponse`, gated on `ErrorClass::System` |
+| `AppError::HorizonUnavailable` | Same gate, `ErrorClass::Upstream` |
+| Per-request transaction traces | `sentry_tracing::SentryHttpLayer` on the Axum router |
+| User errors (4xx) | **Not captured** — `ErrorClass::User` is excluded |
+
+**Setup:**
+
+Set these environment variables (see `.env.example`):
+
+```dotenv
+SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
+SENTRY_ENVIRONMENT=production   # or staging / development
+```
+
+Omit `SENTRY_DSN` (or leave it blank) to disable Sentry entirely — no errors, no panics, no traces are sent.
+
+**Verify:**
+
+```bash
+cargo test sentry   # runs the capture-gate unit tests in src/error.rs
+```

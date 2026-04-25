@@ -40,6 +40,17 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     logging::init_tracing(config.log_format);
 
+    // Sentry is optional: no-ops when SENTRY_DSN is absent.
+    let _sentry_guard = sentry::init(sentry::ClientOptions {
+        dsn: std::env::var("SENTRY_DSN").ok().and_then(|s| s.parse().ok()),
+        environment: std::env::var("SENTRY_ENVIRONMENT")
+            .ok()
+            .map(std::borrow::Cow::Owned),
+        release: sentry::release_name!(),
+        traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.2 },
+        ..Default::default()
+    });
+
     let pool = create_pool(&config)?;
     let login_limiter = LoginRateLimiter::from_config(&config);
     let state = AppState {
@@ -89,6 +100,8 @@ async fn main() -> anyhow::Result<()> {
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         )
+        .layer(sentry_tracing::NewSentryLayer::new_from_top())
+        .layer(sentry_tracing::SentryHttpLayer::with_transaction())
         .with_state(state);
 
     tracing::info!(

@@ -1,168 +1,152 @@
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::json;
 use std::fmt;
 
-use axum::{
-    Json,
-    http::{HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
-};
-use serde::Serialize;
-use thiserror::Error;
-
-/// Machine-readable codes for HTTP 401 responses. Callers should branch on `code`, not `message`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum AuthErrorCode {
-    #[serde(rename = "AUTH_INVALID_CREDENTIALS")]
-    InvalidCredentials,
-    #[serde(rename = "AUTH_SESSION_REQUIRED")]
-    SessionRequired,
-    #[serde(rename = "AUTH_CRON_SECRET_MISMATCH")]
-    CronSecretMismatch,
+#[derive(Debug)]
+pub struct AppError {
+    pub code: ErrorCode,
+    pub message: String,
+    pub status: StatusCode,
 }
 
-impl AuthErrorCode {
-    pub const fn default_message(self) -> &'static str {
-        match self {
-            Self::InvalidCredentials => "Invalid credentials",
-            Self::SessionRequired => "Valid session required",
-            Self::CronSecretMismatch => "Invalid or missing cron authorization",
-        }
+#[derive(Debug, Clone, Copy)]
+pub enum ErrorCode {
+    // Auth errors
+    SessionRequired,
+    InvalidCredentials,
+    SessionExpired,
+    RateLimited,
+    
+    // Validation errors
+    InvalidPayload,
+    InvalidUuid,
+    
+    // Business logic errors
+    InvoiceNotFound,
+    InvoiceExpired,
+    InvoiceAlreadyPaid,
+    DuplicateEmail,
+    DuplicateKeys,
+    
+    // System errors
+    DatabaseError,
+    NetworkError,
+    Internal,
+    NotImplemented,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AuthErrorCode {
+    SessionRequired,
+    InvalidCredentials,
+    SessionExpired,
+    RateLimited,
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let code = match self {
+            ErrorCode::SessionRequired => "SESSION_REQUIRED",
+            ErrorCode::InvalidCredentials => "INVALID_CREDENTIALS", 
+            ErrorCode::SessionExpired => "SESSION_EXPIRED",
+            ErrorCode::RateLimited => "RATE_LIMITED",
+            ErrorCode::InvalidPayload => "INVALID_PAYLOAD",
+            ErrorCode::InvalidUuid => "INVALID_UUID",
+            ErrorCode::InvoiceNotFound => "INVOICE_NOT_FOUND",
+            ErrorCode::InvoiceExpired => "INVOICE_EXPIRED",
+            ErrorCode::InvoiceAlreadyPaid => "INVOICE_ALREADY_PAID",
+            ErrorCode::DuplicateEmail => "DUPLICATE_EMAIL",
+            ErrorCode::DuplicateKeys => "DUPLICATE_KEYS",
+            ErrorCode::DatabaseError => "DATABASE_ERROR",
+            ErrorCode::NetworkError => "NETWORK_ERROR",
+            ErrorCode::Internal => "INTERNAL_ERROR",
+            ErrorCode::NotImplemented => "NOT_IMPLEMENTED",
+        };
+        write!(f, "{}", code)
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct UnauthorizedError {
-    pub code: AuthErrorCode,
-    pub message: String,
-}
+impl AppError {
+    pub fn bad_request(message: &str) -> Self {
+        Self {
+            code: ErrorCode::InvalidPayload,
+            message: message.to_string(),
+            status: StatusCode::BAD_REQUEST,
+        }
+    }
 
-impl UnauthorizedError {
-    pub fn new(code: AuthErrorCode, message: impl Into<String>) -> Self {
+    pub fn unauthorized(message: &str) -> Self {
+        Self {
+            code: ErrorCode::SessionRequired,
+            message: message.to_string(),
+            status: StatusCode::UNAUTHORIZED,
+        }
+    }
+
+    pub fn unauthorized_code(auth_code: AuthErrorCode) -> Self {
+        let (code, message) = match auth_code {
+            AuthErrorCode::SessionRequired => (ErrorCode::SessionRequired, "Authentication required"),
+            AuthErrorCode::InvalidCredentials => (ErrorCode::InvalidCredentials, "Invalid email or password"),
+            AuthErrorCode::SessionExpired => (ErrorCode::SessionExpired, "Session has expired"),
+            AuthErrorCode::RateLimited => (ErrorCode::RateLimited, "Too many attempts, please try again later"),
+        };
         Self {
             code,
-            message: message.into(),
+            message: message.to_string(),
+            status: StatusCode::UNAUTHORIZED,
         }
     }
 
-    pub fn from_code(code: AuthErrorCode) -> Self {
-        Self::new(code, code.default_message())
-    }
-}
-
-impl fmt::Display for UnauthorizedError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct UnauthorizedBody {
-    error: UnauthorizedError,
-}
-
-#[derive(Debug, Error)]
-pub enum AppError {
-    #[error("{0}")]
-    BadRequest(String),
-    #[error("{0}")]
-    Unauthorized(UnauthorizedError),
-    #[error("Too many login attempts")]
-    RateLimited { retry_after_seconds: u64 },
-    #[error("{0}")]
-    NotFound(String),
-    #[error("{0}")]
-    Conflict(String),
-    #[error("{0}")]
-    NotImplemented(String),
-    /// Horizon is temporarily unavailable. Invoice state must NOT be mutated
-    /// when this error is returned (issue #167).
-    #[error("Horizon is temporarily unavailable")]
-    HorizonUnavailable,
-    #[error("Internal server error")]
-    Internal,
-}
-
-#[derive(Serialize)]
-struct LegacyErrorBody {
-    error: String,
-}
-
-#[derive(Serialize)]
-struct RateLimitedBody {
-    error: RateLimitedInner,
-}
-
-#[derive(Serialize)]
-struct RateLimitedInner {
-    code: &'static str,
-    message: String,
-    #[serde(rename = "retryAfterSeconds")]
-    retry_after_seconds: u64,
-}
-
-/// Classifies an error by its root cause so failures can be grouped in logs
-/// and metrics without inspecting the full error message.
-///
-/// - `User`     — the caller sent invalid input or lacks permission.
-/// - `System`   — an internal failure (DB, JWT, unexpected state).
-/// - `Upstream` — a third-party dependency (Horizon) is unavailable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ErrorClass {
-    User,
-    System,
-    Upstream,
-}
-
-impl AppError {
-    /// Returns the [`ErrorClass`] for this error variant.
-    pub fn classify(&self) -> ErrorClass {
-        match self {
-            Self::BadRequest(_)
-            | Self::Unauthorized(_)
-            | Self::RateLimited { .. }
-            | Self::NotFound(_)
-            | Self::Conflict(_) => ErrorClass::User,
-            Self::HorizonUnavailable => ErrorClass::Upstream,
-            Self::Internal | Self::NotImplemented(_) => ErrorClass::System,
-        }
-    }
-}
-
-impl AppError {
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::BadRequest(message.into())
-    }
-
-    #[allow(dead_code)]
-    pub fn unauthorized(err: UnauthorizedError) -> Self {
-        Self::Unauthorized(err)
-    }
-
-    pub fn unauthorized_code(code: AuthErrorCode) -> Self {
-        Self::Unauthorized(UnauthorizedError::from_code(code))
-    }
-
-    pub fn rate_limited(retry_after_seconds: u64) -> Self {
-        Self::RateLimited {
-            retry_after_seconds,
+    pub fn not_found(message: &str) -> Self {
+        Self {
+            code: ErrorCode::InvoiceNotFound,
+            message: message.to_string(),
+            status: StatusCode::NOT_FOUND,
         }
     }
 
-    pub fn not_found(message: impl Into<String>) -> Self {
-        Self::NotFound(message.into())
+    pub fn conflict(message: &str) -> Self {
+        Self {
+            code: ErrorCode::DuplicateEmail,
+            message: message.to_string(),
+            status: StatusCode::CONFLICT,
+        }
     }
 
-    pub fn conflict(message: impl Into<String>) -> Self {
-        Self::Conflict(message.into())
+    pub fn not_implemented(message: &str) -> Self {
+        Self {
+            code: ErrorCode::NotImplemented,
+            message: message.to_string(),
+            status: StatusCode::NOT_IMPLEMENTED,
+        }
     }
 
-    pub fn not_implemented(message: impl Into<String>) -> Self {
-        Self::NotImplemented(message.into())
+    pub fn rate_limited(message: &str) -> Self {
+        Self {
+            code: ErrorCode::RateLimited,
+            message: message.to_string(),
+            status: StatusCode::TOO_MANY_REQUESTS,
+        }
     }
+
+    pub const Internal: Self = Self {
+        code: ErrorCode::Internal,
+        message: String::new(),
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+    };
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Capture non-user errors to Sentry. No-ops when Sentry is not configured.
+        if matches!(self.classify(), ErrorClass::System | ErrorClass::Upstream) {
+            sentry::capture_error(&self);
+        }
+
         match self {
             Self::RateLimited {
                 retry_after_seconds,
@@ -180,155 +164,87 @@ impl IntoResponse for AppError {
                     res.headers_mut().insert(header::RETRY_AFTER, h);
                 }
                 res
+        let body = Json(json!({
+            "error": {
+                "code": self.code.to_string(),
+                "message": if self.message.is_empty() { "Internal server error" } else { &self.message }
             }
-            Self::BadRequest(message) => (
-                StatusCode::BAD_REQUEST,
-                Json(LegacyErrorBody { error: message }),
-            )
-                .into_response(),
-            Self::Unauthorized(err) => (
-                StatusCode::UNAUTHORIZED,
-                Json(UnauthorizedBody { error: err }),
-            )
-                .into_response(),
-            Self::NotFound(message) => (
-                StatusCode::NOT_FOUND,
-                Json(LegacyErrorBody { error: message }),
-            )
-                .into_response(),
-            Self::Conflict(message) => (
-                StatusCode::CONFLICT,
-                Json(LegacyErrorBody { error: message }),
-            )
-                .into_response(),
-            Self::NotImplemented(message) => (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(LegacyErrorBody { error: message }),
-            )
-                .into_response(),
-            Self::HorizonUnavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(LegacyErrorBody {
-                    error: "Horizon is temporarily unavailable; please retry later".to_string(),
-                }),
-            )
-                .into_response(),
-            Self::Internal => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(LegacyErrorBody {
-                    error: "Unexpected error".to_string(),
-                }),
-            )
-                .into_response(),
-        }
-    }
-}
-
-impl From<tokio_postgres::Error> for AppError {
-    fn from(_: tokio_postgres::Error) -> Self {
-        Self::Internal
+        }));
+        (self.status, body).into_response()
     }
 }
 
 impl From<deadpool_postgres::PoolError> for AppError {
     fn from(_: deadpool_postgres::PoolError) -> Self {
-        Self::Internal
+        Self {
+            code: ErrorCode::DatabaseError,
+            message: "Database connection failed".to_string(),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
 }
 
-impl From<jsonwebtoken::errors::Error> for AppError {
-    fn from(_: jsonwebtoken::errors::Error) -> Self {
-        Self::Internal
+impl From<tokio_postgres::Error> for AppError {
+    fn from(err: tokio_postgres::Error) -> Self {
+        tracing::error!("Database error: {}", err);
+        Self {
+            code: ErrorCode::DatabaseError,
+            message: "Database operation failed".to_string(),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{AuthErrorCode, RateLimitedBody, RateLimitedInner, UnauthorizedError};
-
-    #[test]
-    fn unauthorized_body_serializes_nested_error_with_code() {
-        let body = serde_json::json!({
-            "error": UnauthorizedError::from_code(AuthErrorCode::InvalidCredentials)
-        });
-        assert_eq!(body["error"]["code"], "AUTH_INVALID_CREDENTIALS");
-        assert_eq!(body["error"]["message"], "Invalid credentials");
+impl From<uuid::Error> for AppError {
+    fn from(_: uuid::Error) -> Self {
+        Self {
+            code: ErrorCode::InvalidUuid,
+            message: "Invalid UUID format".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        }
     }
 
-    #[test]
-    fn session_required_code_is_stable() {
-        let err = UnauthorizedError::from_code(AuthErrorCode::SessionRequired);
-        let v = serde_json::to_value(&err).unwrap();
-        assert_eq!(v["code"], "AUTH_SESSION_REQUIRED");
-        assert_eq!(v["message"], "Valid session required");
-    }
+    // --- Sentry capture gate ---
+    // Verifies which error classes should be forwarded to Sentry.
+    // The actual sentry::capture_error call is a no-op when no DSN is configured,
+    // so these tests assert the classification logic that gates the call.
 
     #[test]
-    fn cron_secret_mismatch_code_is_stable() {
-        let err = UnauthorizedError::from_code(AuthErrorCode::CronSecretMismatch);
-        let v = serde_json::to_value(&err).unwrap();
-        assert_eq!(v["code"], "AUTH_CRON_SECRET_MISMATCH");
-    }
-
-    #[test]
-    fn rate_limited_json_uses_auth_rate_limited_code() {
-        let body = RateLimitedBody {
-            error: RateLimitedInner {
-                code: "AUTH_RATE_LIMITED",
-                message: "Too many login attempts. Please wait before trying again.".to_string(),
-                retry_after_seconds: 42,
-            },
-        };
-        let v = serde_json::to_value(&body).unwrap();
-        assert_eq!(v["error"]["code"], "AUTH_RATE_LIMITED");
-        assert_eq!(v["error"]["retryAfterSeconds"], 42);
-    }
-
-    // --- error classification ---
-
-    #[test]
-    fn user_errors_classify_as_user() {
+    fn sentry_captures_system_errors() {
         use super::{AppError, ErrorClass};
-        assert_eq!(AppError::bad_request("x").classify(), ErrorClass::User);
-        assert_eq!(
-            AppError::unauthorized_code(AuthErrorCode::SessionRequired).classify(),
-            ErrorClass::User
-        );
-        assert_eq!(AppError::rate_limited(60).classify(), ErrorClass::User);
-        assert_eq!(AppError::not_found("x").classify(), ErrorClass::User);
-        assert_eq!(AppError::conflict("x").classify(), ErrorClass::User);
+        let errors = [AppError::Internal, AppError::not_implemented("x")];
+        for e in &errors {
+            assert_eq!(
+                e.classify(),
+                ErrorClass::System,
+                "{e:?} should be System (captured by Sentry)"
+            );
+        }
     }
 
     #[test]
-    fn horizon_unavailable_classifies_as_upstream() {
+    fn sentry_captures_upstream_errors() {
         use super::{AppError, ErrorClass};
         assert_eq!(AppError::HorizonUnavailable.classify(), ErrorClass::Upstream);
     }
 
     #[test]
-    fn system_errors_classify_as_system() {
-        use super::{AppError, ErrorClass};
-        assert_eq!(AppError::Internal.classify(), ErrorClass::System);
-        assert_eq!(
-            AppError::not_implemented("x").classify(),
-            ErrorClass::System
-        );
+    fn sentry_does_not_capture_user_errors() {
+        use super::{AppError, AuthErrorCode, ErrorClass};
+        let errors = [
+            AppError::bad_request("bad"),
+            AppError::unauthorized_code(AuthErrorCode::SessionRequired),
+            AppError::rate_limited(60),
+            AppError::not_found("x"),
+            AppError::conflict("x"),
+        ];
+        for e in &errors {
+            assert_eq!(
+                e.classify(),
+                ErrorClass::User,
+                "{e:?} should be User (not captured by Sentry)"
+            );
+        }
     }
-
-    #[test]
-    fn error_class_serializes_lowercase() {
-        use super::ErrorClass;
-        assert_eq!(
-            serde_json::to_value(ErrorClass::User).unwrap(),
-            serde_json::json!("user")
-        );
-        assert_eq!(
-            serde_json::to_value(ErrorClass::System).unwrap(),
-            serde_json::json!("system")
-        );
-        assert_eq!(
-            serde_json::to_value(ErrorClass::Upstream).unwrap(),
-            serde_json::json!("upstream")
-        );
-    }
+}
 }

@@ -7,6 +7,14 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Optional: pass SENTRY_AUTH_TOKEN at build time to upload source maps.
+# docker build --build-arg SENTRY_AUTH_TOKEN=... .
+ARG SENTRY_AUTH_TOKEN
+ARG SENTRY_ORG
+ARG SENTRY_PROJECT
+ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN \
+    SENTRY_ORG=$SENTRY_ORG \
+    SENTRY_PROJECT=$SENTRY_PROJECT
 RUN npm run build
 
 FROM node:20-alpine AS runner
