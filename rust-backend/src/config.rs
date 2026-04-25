@@ -2,6 +2,8 @@ use std::{env, net::SocketAddr};
 
 use chrono::Duration;
 
+use crate::redact::Redacted;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogFormat {
     Human,
@@ -24,25 +26,34 @@ impl LogFormat {
     }
 }
 
+/// Application configuration.
+///
+/// Sensitive fields (`session_secret`, `platform_treasury_secret_key`,
+/// `cron_secret`, `database_url`) are wrapped in [`Redacted`] so that
+/// deriving or using `{:?}` on this struct never leaks secrets into logs.
+/// Access the raw value via `.field.inner()` or `.field.as_ref()`.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub app_url: String,
     pub public_app_url: String,
-    pub database_url: String,
+    /// Wrapped in `Redacted` — contains embedded credentials (`user:pass@host`).
+    pub database_url: Redacted<String>,
     pub pgssl: String,
-    pub session_secret: String,
+    /// Wrapped in `Redacted` — used to sign session JWTs.
+    pub session_secret: Redacted<String>,
     pub horizon_url: String,
     pub network_passphrase: String,
     pub stellar_network: String,
     pub asset_code: String,
     pub asset_issuer: String,
     pub platform_treasury_public_key: String,
-    pub platform_treasury_secret_key: Option<String>,
+    /// Wrapped in `Redacted` — Stellar signing key; `None` when settlement is disabled.
+    pub platform_treasury_secret_key: Option<Redacted<String>>,
     pub platform_fee_bps: i32,
     pub invoice_expiry_hours: i64,
-    /// Shared secret for `Authorization: Bearer` on cron and Stellar webhook routes (see `auth::authorize_cron_request`).
-    pub cron_secret: String,
+    /// Wrapped in `Redacted` — shared bearer secret for cron and webhook routes.
+    pub cron_secret: Redacted<String>,
     pub secure_cookies: bool,
     /// Sliding window (seconds) for per-IP `POST /api/auth/login` attempts. `LOGIN_RATE_IP_MAX=0` disables.
     pub login_rate_ip_window_secs: u64,
@@ -72,9 +83,9 @@ impl Config {
             bind_addr,
             public_app_url: env::var("NEXT_PUBLIC_APP_URL").unwrap_or_else(|_| app_url.clone()),
             app_url: app_url.clone(),
-            database_url: env::var("DATABASE_URL")?,
+            database_url: Redacted::new(env::var("DATABASE_URL")?),
             pgssl: env::var("PGSSL").unwrap_or_else(|_| "disable".to_string()),
-            session_secret: env::var("SESSION_SECRET")?,
+            session_secret: Redacted::new(env::var("SESSION_SECRET")?),
             horizon_url: env::var("HORIZON_URL")
                 .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".to_string()),
             network_passphrase: env::var("NETWORK_PASSPHRASE")
@@ -83,7 +94,9 @@ impl Config {
             asset_code: env::var("ASSET_CODE").unwrap_or_else(|_| "USDC".to_string()),
             asset_issuer: env::var("ASSET_ISSUER")?,
             platform_treasury_public_key: env::var("PLATFORM_TREASURY_PUBLIC_KEY")?,
-            platform_treasury_secret_key: env::var("PLATFORM_TREASURY_SECRET_KEY").ok(),
+            platform_treasury_secret_key: env::var("PLATFORM_TREASURY_SECRET_KEY")
+                .ok()
+                .map(Redacted::new),
             platform_fee_bps: env::var("PLATFORM_FEE_BPS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -92,7 +105,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(24),
-            cron_secret: env::var("CRON_SECRET").unwrap_or_default(),
+            cron_secret: Redacted::new(env::var("CRON_SECRET").unwrap_or_default()),
             secure_cookies: app_url.starts_with("https://"),
             login_rate_ip_window_secs: env::var("LOGIN_RATE_IP_WINDOW_SECS")
                 .ok()
@@ -136,15 +149,16 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{Config, LogFormat};
+    use crate::redact::Redacted;
 
     fn sample_config() -> Config {
         Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_url: "http://localhost:3000".to_string(),
             public_app_url: "http://localhost:3000".to_string(),
-            database_url: "postgres://postgres:postgres@localhost:5432/astropay".to_string(),
+            database_url: Redacted::new("postgres://postgres:postgres@localhost:5432/astropay".to_string()),
             pgssl: "disable".to_string(),
-            session_secret: "secret".to_string(),
+            session_secret: Redacted::new("secret".to_string()),
             horizon_url: "https://horizon-testnet.stellar.org".to_string(),
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
             stellar_network: "TESTNET".to_string(),
@@ -154,7 +168,7 @@ mod tests {
             platform_treasury_secret_key: None,
             platform_fee_bps: 100,
             invoice_expiry_hours: 24,
-            cron_secret: "cron".to_string(),
+            cron_secret: Redacted::new("cron".to_string()),
             secure_cookies: false,
             login_rate_ip_window_secs: 600,
             login_rate_ip_max: 80,
@@ -222,5 +236,31 @@ mod tests {
         assert_eq!(LogFormat::from_env("json"), LogFormat::Json);
         assert_eq!(LogFormat::from_env("JSON"), LogFormat::Json);
         assert_eq!(LogFormat::from_env("pretty"), LogFormat::Human);
+    }
+
+    // ── Log-redaction: Config must not leak secrets via Debug ────────────────
+
+    #[test]
+    fn config_debug_does_not_expose_session_secret() {
+        let config = sample_config();
+        let output = format!("{config:?}");
+        assert!(output.contains("[REDACTED]"), "Redacted fields must show [REDACTED]");
+        assert!(!output.contains("secret"), "session_secret value must not appear in Debug output");
+    }
+
+    #[test]
+    fn config_debug_does_not_expose_cron_secret() {
+        let config = sample_config();
+        let output = format!("{config:?}");
+        // "cron" is the test value for cron_secret — must not appear verbatim.
+        // We check the field name is present but the value is redacted.
+        assert!(!output.contains("\"cron\""), "cron_secret value must not appear in Debug output");
+    }
+
+    #[test]
+    fn config_debug_does_not_expose_database_credentials() {
+        let config = sample_config();
+        let output = format!("{config:?}");
+        assert!(!output.contains("postgres:postgres"), "DB credentials must not appear in Debug output");
     }
 }

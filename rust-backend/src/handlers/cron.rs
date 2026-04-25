@@ -1,7 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State, Query},
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
 use chrono::{DateTime, Utc};
@@ -19,30 +18,18 @@ use crate::{
     money_state::{
         INVOICE_ALREADY_TRANSITIONED_REASON, InvoicePaidOutcome, mark_invoice_paid_and_queue_payout,
     },
-    stellar::{
-        PaymentScanResult, confirm_transaction, fetch_treasury_payments,
-        find_payment_for_invoice, invoice_is_expired, is_valid_account_public_key,
-        TransactionStatus,
     settle::{backoff_seconds, is_backoff_elapsed},
     stellar::{
         PaymentScanResult, fetch_treasury_payments,
-        find_payment_for_invoice, invoice_is_expired, is_valid_account_public_key,
+        find_payment_for_invoice, invoice_is_expired,
     },
-    settle::{backoff_seconds, is_backoff_elapsed},
 };
 
 pub(crate) const PAYOUT_DEAD_LETTER_THRESHOLD: i32 = 5;
 
-/// Default number of queued payouts processed per settle run. Override with `SETTLE_BATCH_SIZE` env var.
+/// Default number of queued payouts processed per settle run.
 const DEFAULT_SETTLE_BATCH_SIZE: i64 = 50;
-const RECONCILE_PAGE_SIZE: i64 = 100;
-const SETTLE_PAGE_SIZE: i64 = 100;
-const ORPHAN_SCAN_LIMIT: u32 = 50;
 
-#[derive(Deserialize)]
-pub struct DryRunParams {
-    #[serde(default)]
-    pub dry_run: bool,
 /// Default number of recent treasury payments to scan for orphans.
 const ORPHAN_SCAN_LIMIT: u32 = 50;
 
@@ -61,14 +48,6 @@ pub struct DryRunParams {
 #[derive(Debug, Deserialize)]
 pub struct ReplayRequest {
     #[serde(rename = "publicId")]
-    public_id: String,
-    #[serde(default)]
-    pub batch_size: Option<i64>,
-}
-
-#[derive(Deserialize)]
-pub struct ReplayRequest {
-    #[serde(rename = "publicId")]
     pub public_id: String,
     #[serde(default)]
     pub dry_run: bool,
@@ -85,15 +64,10 @@ pub async fn reconcile(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<DryRunParams>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let dry_run = params.dry_run;
     let scan_window_hours = state.config.reconcile_scan_window_hours;
     let mut client = state.pool.get().await?;
-
-    let mut results: Vec<Value> = Vec::new();
-
-    let mut client = state.pool.get().await?;
-
     let mut results: Vec<Value> = Vec::new();
     let mut cursor_created_at: DateTime<Utc> = DateTime::UNIX_EPOCH;
     let mut cursor_id: Uuid = Uuid::nil();
@@ -137,88 +111,46 @@ pub async fn reconcile(
             }
 
             match find_payment_for_invoice(&state.config, &invoice).await {
-                Err(AppError::HorizonUnavailable) => {
-                    warn!(public_id = %invoice.public_id, "Horizon unavailable during reconcile — skipping");
+                Err(AppError { code: crate::error::ErrorCode::HorizonUnavailable, .. }) => {
+                    warn!(public_id = %invoice.public_id, "Horizon unavailable during reconcile — skipping invoice");
                     results.push(json!({ "publicId": invoice.public_id, "action": "skipped_horizon_unavailable" }));
-                }
-                Err(e) => return Err(e),
-                Ok(PaymentScanResult::NotFound) => {
-                    results.push(json!({ "publicId": invoice.public_id, "action": "pending" }));
-                }
-                Ok(PaymentScanResult::AssetMismatch(mismatch)) => {
-                    if !dry_run {
-                        client.execute(
-                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                            &[&invoice.id, &"payment_asset_mismatch", &json!(mismatch)],
-                        ).await?;
-                    }
-                    results.push(json!({ "publicId": invoice.public_id, "action": "asset_mismatch" }));
-                }
-                results.push(json!({
-                    "publicId": invoice.public_id,
-                    "action": "asset_mismatch",
-                    "hash": mismatch.hash,
-                    "receivedAssetCode": mismatch.received_asset_code,
-                    "expectedAssetCode": mismatch.expected_asset_code,
-                }));
-            }
-            // Issue #172: destination + asset + amount match but memo is wrong/missing.
-            PaymentScanResult::MemoMismatch(mismatch) => {
-                if !dry_run {
-                    client
-                        .execute(
-                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                            &[
-                                &invoice.id,
-                                &"payment_memo_mismatch",
-                                &json!({
-                                    "hash": mismatch.hash,
-                                    "receivedMemo": mismatch.received_memo,
-                                    "expectedMemo": mismatch.expected_memo,
-                                }),
-                            ],
-                        )
-                        .await?;
-                }
-                results.push(json!({
-                    "publicId": invoice.public_id,
-                    "action": "memo_mismatch",
-                    "hash": mismatch.hash,
-                    "receivedMemo": mismatch.received_memo,
-                    "expectedMemo": mismatch.expected_memo,
-                }));
-            }
-            PaymentScanResult::Match(payment) => {
-            Some(payment) => {
-                // Idempotency guard: if this transaction hash is already stored
-                // on any invoice, a previous run already processed this payment.
-                let already = client
-                    .query_opt(
-                        "SELECT id FROM invoices WHERE transaction_hash = $1",
-                        &[&payment.hash],
-                    )
-                    .await?;
-                if already.is_some() {
-                Ok(PaymentScanResult::Match(payment)) => {
-                    let transaction = client.transaction().await?;
-                    warn!(
-                        public_id = %invoice.public_id,
-                        "Horizon unavailable during reconcile — skipping invoice"
-                    );
-                    results.push(json!({ "publicId": invoice.public_id, "action": "skipped_horizon_unavailable" }));
-                    continue;
                 }
                 Err(e) => return Err(e),
                 Ok(PaymentScanResult::NotFound) => {
                     results.push(json!({ "publicId": invoice.public_id, "action": "pending" }));
                 }
                 Ok(PaymentScanResult::AssetMismatch(m)) => {
+                    if !dry_run {
+                        client.execute(
+                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
+                            &[&invoice.id, &"payment_asset_mismatch", &json!(m)],
+                        ).await?;
+                    }
                     results.push(json!({
                         "publicId": invoice.public_id,
                         "action": "asset_mismatch",
                         "hash": m.hash,
                         "receivedAssetCode": m.received_asset_code,
                         "expectedAssetCode": m.expected_asset_code,
+                    }));
+                }
+                Ok(PaymentScanResult::MemoMismatch(mismatch)) => {
+                    if !dry_run {
+                        client.execute(
+                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
+                            &[&invoice.id, &"payment_memo_mismatch", &json!({
+                                "hash": mismatch.hash,
+                                "receivedMemo": mismatch.received_memo,
+                                "expectedMemo": mismatch.expected_memo,
+                            })],
+                        ).await?;
+                    }
+                    results.push(json!({
+                        "publicId": invoice.public_id,
+                        "action": "memo_mismatch",
+                        "hash": mismatch.hash,
+                        "receivedMemo": mismatch.received_memo,
+                        "expectedMemo": mismatch.expected_memo,
                     }));
                 }
                 Ok(PaymentScanResult::Match(payment)) => {
@@ -237,88 +169,34 @@ pub async fn reconcile(
                         .await;
                     let updated = match updated {
                         Ok(n) => n,
-                        Err(ref e)
-                            if e.code()
-                                == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
-                        {
-                            results.push(json!({
-                                "publicId": invoice.public_id,
-                                "action": "already_processed",
-                                "txHash": payment.hash
-                            }));
+                        Err(ref e) if e.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
+                            results.push(json!({ "publicId": invoice.public_id, "action": "already_processed", "txHash": payment.hash }));
                             continue;
                         }
                         Err(_) => return Err(AppError::Internal),
                     };
                     if updated == 0 {
-                        results.push(json!({
-                            "publicId": invoice.public_id,
-                            "action": "skipped",
-                            "txHash": payment.hash
-                        }));
+                        results.push(json!({ "publicId": invoice.public_id, "action": "skipped", "txHash": payment.hash }));
                         continue;
                     }
                     let outcome = mark_invoice_paid_and_queue_payout(
-                        &transaction,
-                        invoice.id,
-                        &payment.hash,
-                        &payment.payment,
+                        &transaction, invoice.id, &payment.hash, &payment.payment,
                     ).await?;
                     transaction.commit().await?;
-
                     match outcome {
-                        InvoicePaidOutcome::Applied { payout_queued, .. } => {
-                            results.push(json!({ "publicId": invoice.public_id, "action": "paid", "txHash": payment.hash, "payoutQueued": payout_queued }));
+                        InvoicePaidOutcome::Applied { payout_queued, payout_skip_reason } => {
+                            results.push(json!({
+                                "publicId": invoice.public_id,
+                                "action": "paid",
+                                "txHash": payment.hash,
+                                "memo": payment.memo,
+                                "payoutQueued": payout_queued,
+                                "payoutSkipReason": payout_skip_reason.map(|r| r.as_str()),
+                            }));
                         }
                         InvoicePaidOutcome::AlreadyTransitioned => {
-                            results.push(json!({ "publicId": invoice.public_id, "action": "skipped", "reason": "already_transitioned" }));
+                            results.push(json!({ "publicId": invoice.public_id, "action": "skipped", "reason": INVOICE_ALREADY_TRANSITIONED_REASON }));
                         }
-                    }
-                }
-            }
-        }
-
-        if (page_len as i64) < RECONCILE_PAGE_SIZE {
-            break;
-        }
-    }
-
-    // Confirmation logic
-    let submitted_rows = client
-        .query(
-            "SELECT id, transaction_hash FROM payouts WHERE status = 'submitted' AND transaction_hash IS NOT NULL LIMIT 100",
-            &[],
-        ).await?;
-
-    let mut confirmed_count = 0;
-    for row in submitted_rows {
-        let payout_id: Uuid = row.get("id");
-        let tx_hash: String = row.get("transaction_hash");
-        if let Ok(TransactionStatus::Success) = confirm_transaction(&state.config, &tx_hash).await {
-            if !dry_run {
-                client.execute("UPDATE payouts SET status = 'confirmed', updated_at = NOW() WHERE id = $1", &[&payout_id]).await?;
-            }
-            confirmed_count += 1;
-                    )
-                    .await?;
-                    transaction.commit().await?;
-                    match outcome {
-                        InvoicePaidOutcome::Applied {
-                            payout_queued,
-                            payout_skip_reason,
-                        } => results.push(json!({
-                            "publicId": invoice.public_id,
-                            "action": "paid",
-                            "txHash": payment.hash,
-                            "memo": payment.memo,
-                            "payoutQueued": payout_queued,
-                            "payoutSkipReason": payout_skip_reason.map(|r| r.as_str())
-                        })),
-                        InvoicePaidOutcome::AlreadyTransitioned => results.push(json!({
-                            "publicId": invoice.public_id,
-                            "action": "skipped",
-                            "reason": INVOICE_ALREADY_TRANSITIONED_REASON
-                        })),
                     }
                 }
             }
@@ -332,7 +210,6 @@ pub async fn reconcile(
     let body = json!({
         "dryRun": dry_run,
         "scanned": results.len(),
-        "confirmed": confirmed_count,
         "results": results,
     });
 
@@ -350,8 +227,8 @@ pub async fn purge_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
-    let mut client = state.pool.get().await?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
+    let client = state.pool.get().await?;
     let deleted = client.execute("DELETE FROM sessions WHERE expires_at < NOW()", &[]).await?;
     let body = json!({ "deleted": deleted });
     
@@ -367,7 +244,7 @@ pub async fn archive(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let mut client = state.pool.get().await?;
     let retention_days = state.config.archive_retention_days;
     let transaction = client.transaction().await?;
@@ -437,51 +314,13 @@ pub async fn archive(
     Ok(Json(body))
 }
 
-pub async fn settle(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    axum::extract::Query(params): axum::extract::Query<DryRunParams>,
-) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
-
-    // Issue #1: Reject settlement execution when the treasury signing key is missing.
-    // Without it we cannot sign Stellar transactions, so failing fast here prevents
-    // payouts from being silently skipped or left in an ambiguous state.
-    if state.config.platform_treasury_secret_key.is_none() {
-        return Err(AppError::bad_request(
-            "PLATFORM_TREASURY_SECRET_KEY is not configured; settlement execution is disabled. \
-             Set the env var and redeploy before running the settle cron.",
-        ));
-    }
-    let mut client = state.pool.get().await?;
-    let batch_size = params.batch_size.unwrap_or(DEFAULT_SETTLE_BATCH_SIZE).max(1);
-    let mut dead_lettered = 0;
-    let mut requeued = 0;
-
-    let rows = client.query(
-        "SELECT * FROM payouts WHERE status = 'failed' ORDER BY updated_at ASC LIMIT $1",
-        &[&batch_size]
-    ).await?;
-
-    for row in rows {
-        let payout_id: Uuid = row.get("id");
-        let failure_count: i32 = row.get("failure_count");
-        let new_count = failure_count + 1;
-
-        if new_count >= PAYOUT_DEAD_LETTER_THRESHOLD {
-            client.execute("UPDATE payouts SET status = 'dead_lettered', failure_count = $2 WHERE id = $1", &[&payout_id, &new_count]).await?;
-            dead_lettered += 1;
-        } else {
-            client.execute("UPDATE payouts SET status = 'queued', failure_count = $2 WHERE id = $1", &[&payout_id, &new_count]).await?;
-            requeued += 1;
-        }
 /// Scans failed payouts and increments failure count; dead-letters at threshold.
 pub async fn settle(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<DryRunParams>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let mut client = state.pool.get().await?;
     let _ = params;
 
@@ -602,7 +441,6 @@ pub async fn settle(
         warn!(error = %e, "cron_runs audit insert failed for settle");
     }
 
-    let body = json!({ "deadLettered": dead_lettered, "requeued": requeued });
     Ok(Json(body))
 }
 
@@ -611,11 +449,8 @@ pub async fn replay_payout(
     headers: HeaderMap,
     Path(payout_id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let mut client = state.pool.get().await?;
-    client.execute("UPDATE payouts SET status = 'queued', failure_count = 0 WHERE id = $1", &[&payout_id]).await?;
-    Ok(Json(json!({ "payoutId": payout_id, "status": "queued" })))
-}
 
     // Load the payout — must exist and be in a replayable state.
     let row = client
@@ -631,7 +466,7 @@ pub async fn replay_payout(
     let failure_count: i32 = row.get("failure_count");
 
     if status != "dead_lettered" && status != "failed" {
-        return Err(AppError::bad_request(format!(
+        return Err(AppError::bad_request(&format!(
             "payout {payout_id} has status '{status}'; only dead_lettered or failed payouts can be replayed"
         )));
     }
@@ -689,11 +524,9 @@ pub async fn orphan_payments(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<OrphanParams>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let limit = params.limit.unwrap_or(ORPHAN_SCAN_LIMIT).min(200);
     let treasury_payments = fetch_treasury_payments(&state.config, limit).await?;
-    Ok(Json(json!({ "scanned": treasury_payments.len() })))
-}
 
     if treasury_payments.is_empty() {
         return Ok(Json(json!({
@@ -752,8 +585,7 @@ pub async fn replay_invoice(
     headers: HeaderMap,
     Json(body): Json<ReplayRequest>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
-    Ok(Json(json!({ "publicId": body.public_id, "status": "replayed" })))
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
 
     if body.public_id.trim().is_empty() {
         return Err(AppError::bad_request("publicId is required"));
@@ -797,7 +629,7 @@ pub async fn replay_invoice(
     }
 
     match find_payment_for_invoice(&state.config, &invoice).await? {
-        PaymentScanResult::NotFound | PaymentScanResult::AssetMismatch(_) => Ok(Json(json!({
+        PaymentScanResult::NotFound | PaymentScanResult::AssetMismatch(_) | PaymentScanResult::MemoMismatch(_) => Ok(Json(json!({
             "dryRun": dry_run,
             "publicId": invoice.public_id,
             "action": "pending"
@@ -830,49 +662,6 @@ pub async fn replay_invoice(
                     &[&invoice.id, &"payment_detected", &payment.payment],
                 )
                 .await?;
-            let settlement_row = transaction
-                .query_opt(
-                    "SELECT m.settlement_public_key
-                     FROM merchants m
-                     INNER JOIN invoices i ON i.merchant_id = m.id
-                     WHERE i.id = $1",
-                    &[&invoice.id],
-                )
-                .await?;
-            let settlement_key = settlement_row
-                .map(|r| r.get::<_, String>(0))
-                .unwrap_or_default();
-            let (payout_queued, payout_skip_reason) = if !is_valid_account_public_key(
-                &settlement_key,
-            ) {
-                transaction
-                        .execute(
-                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                            &[
-                                &invoice.id,
-                                &"payout_skipped_invalid_destination",
-                                &json!({ "reason": "invalid_settlement_public_key" }),
-                            ],
-                        )
-                        .await?;
-                (false, Some("invalid_settlement_public_key"))
-            } else {
-                let inserted = transaction
-                        .execute(
-                            "INSERT INTO payouts (invoice_id, merchant_id, destination_public_key, amount_cents, asset_code, asset_issuer)
-                             SELECT id, merchant_id, (SELECT settlement_public_key FROM merchants WHERE merchants.id = invoices.merchant_id),
-                                    net_amount_cents, asset_code, asset_issuer
-                             FROM invoices WHERE id = $1
-                             ON CONFLICT (invoice_id) DO NOTHING",
-                            &[&invoice.id],
-                        )
-                        .await?;
-                if inserted > 0 {
-                    (true, None)
-                } else {
-                    (false, Some("payout_already_queued"))
-                }
-            };
             let outcome = mark_invoice_paid_and_queue_payout(
                 &transaction,
                 invoice.id,
@@ -882,10 +671,7 @@ pub async fn replay_invoice(
             .await?;
             transaction.commit().await?;
             match outcome {
-                InvoicePaidOutcome::Applied {
-                    payout_queued,
-                    payout_skip_reason,
-                } => Ok(Json(json!({
+                InvoicePaidOutcome::Applied { payout_queued, payout_skip_reason } => Ok(Json(json!({
                     "dryRun": false,
                     "publicId": invoice.public_id,
                     "action": "paid",
@@ -1217,7 +1003,7 @@ pub async fn payout_health(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let client = state.pool.get().await?;
     let stats = crate::db::payout_queue_stats(&client).await?;
     Ok(Json(json!({

@@ -9,6 +9,7 @@ mod logging;
 mod login_rate_limit;
 mod models;
 mod money_state;
+pub mod redact;
 mod settle;
 mod stellar;
 
@@ -100,13 +101,12 @@ async fn main() -> anyhow::Result<()> {
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         )
-        .layer(sentry_tracing::NewSentryLayer::new_from_top())
-        .layer(sentry_tracing::SentryHttpLayer::with_transaction())
         .with_state(state);
 
     tracing::info!(
         bind_addr = %config.bind_addr,
         log_format = config.log_format.as_str(),
+        database_url = %crate::redact::redact_connection_string(config.database_url.inner()),
         "rust backend listening"
     );
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
