@@ -12,6 +12,7 @@
     "db:migrate": "node scripts/run-migrations.mjs"
   },
   "dependencies": {
+    "@sentry/nextjs": "10.50.0",
     "@stellar/freighter-api": "^5.0.0",
     "jose": "^6.0.11",
     "next": "^15.0.0",
