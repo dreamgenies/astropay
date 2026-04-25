@@ -147,6 +147,42 @@ These are App Router API handlers, not legacy `pages/api` routes:
 - `app/api/cron/settle/route.ts`
 - `app/api/webhooks/stellar/route.ts`
 
+## Sentry error tracing
+
+Sentry is optional. The app boots and runs normally without it. To enable it:
+
+1. Create a project at [sentry.io](https://sentry.io) and copy the DSN.
+2. Set these environment variables in your platform dashboard (Vercel / Railway) or `.env.local`:
+
+   ```dotenv
+   NEXT_PUBLIC_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
+   SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
+   SENTRY_ENVIRONMENT=production   # or staging / development
+   NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
+   ```
+
+3. To upload source maps during CI/Docker builds (recommended for production):
+
+   ```dotenv
+   SENTRY_AUTH_TOKEN=<token from sentry.io → Settings → Auth Tokens>
+   SENTRY_ORG=<your-org-slug>
+   SENTRY_PROJECT=<your-project-slug>
+   ```
+
+   For Docker, pass them as build args:
+   ```bash
+   docker build \
+     --build-arg SENTRY_AUTH_TOKEN=... \
+     --build-arg SENTRY_ORG=... \
+     --build-arg SENTRY_PROJECT=... \
+     .
+   ```
+
+What is instrumented automatically:
+- All Next.js route handlers (server-side exceptions)
+- Edge runtime handlers
+- React client-side errors via `app/error.tsx` and `app/global-error.tsx`
+
 ## Likely deployment blockers
 
 - `npm run lint` depends on a local ESLint config file. This repo now includes one, but you should still expect a deprecation warning from `next lint` on Next.js 15 and plan to move to direct ESLint CLI usage before Next.js 16.
