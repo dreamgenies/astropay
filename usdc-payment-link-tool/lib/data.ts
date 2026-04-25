@@ -3,7 +3,7 @@ import { env } from '@/lib/env';
 import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
-import type { Invoice, Merchant } from '@/lib/types';
+import type { Invoice, Merchant, Payout } from '@/lib/types';
 import type { AssetMismatch, MemoMismatch } from '@/lib/stellar';
 
 export type MarkInvoicePaidPayoutResult = {
@@ -234,7 +234,28 @@ export const markPayoutSettled = async (payoutId: string, invoiceId: string, txH
 };
 
 export const markPayoutFailed = async (payoutId: string, reason: string) => {
-  await query(`UPDATE payouts SET status = 'failed', failure_reason = $2, updated_at = NOW() WHERE id = $1`, [payoutId, reason.slice(0, 500)]);
+  await query(
+    `UPDATE payouts
+     SET status = 'failed',
+         failure_reason = $2,
+         failure_count = failure_count + 1,
+         last_failure_at = NOW(),
+         last_failure_reason = $2,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [payoutId, reason.slice(0, 500)],
+  );
+};
+
+export const getPayoutsByInvoiceId = async (invoiceId: string): Promise<Payout[]> => {
+  const result = await query<Payout>(
+    `SELECT id, invoice_id, merchant_id, destination_public_key, amount_cents,
+            asset_code, asset_issuer, status, transaction_hash, failure_reason,
+            failure_count, last_failure_at, last_failure_reason, created_at, updated_at
+     FROM payouts WHERE invoice_id = $1 ORDER BY created_at DESC`,
+    [invoiceId],
+  );
+  return result.rows;
 };
 
 export const recordAssetMismatch = async (invoiceId: string, mismatch: AssetMismatch) => {

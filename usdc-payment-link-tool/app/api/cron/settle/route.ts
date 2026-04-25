@@ -38,7 +38,12 @@ export async function GET(request: Request) {
       if (!isValidSettlementPublicKey(payout.destination_public_key)) {
         const reason = 'Invalid destination stellar public key';
         if (!dryRun) await markPayoutFailed(payout.id, reason);
-        results.push({ payoutId: payout.id, action: 'failed', reason });
+        results.push({
+          payoutId: payout.id,
+          action: 'failed',
+          reason,
+          failureCount: (payout.failure_count ?? 0) + 1,
+        });
         continue;
       }
 
@@ -60,7 +65,12 @@ export async function GET(request: Request) {
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Settlement failed';
         if (!dryRun) await markPayoutFailed(payout.id, message);
-        results.push({ payoutId: payout.id, action: 'failed', reason: message });
+        results.push({
+          payoutId: payout.id,
+          action: 'failed',
+          reason: message,
+          failureCount: (payout.failure_count ?? 0) + 1,
+        });
       }
     }
 

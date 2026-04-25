@@ -39,3 +39,23 @@ export type Invoice = {
 export type DashboardInvoice = Invoice & {
   business_name: string;
 };
+
+export type PayoutStatus = 'queued' | 'submitted' | 'settled' | 'failed' | 'dead_lettered';
+
+export type Payout = {
+  id: string;
+  invoice_id: string;
+  merchant_id: string;
+  destination_public_key: string;
+  amount_cents: number;
+  asset_code: string;
+  asset_issuer: string;
+  status: PayoutStatus;
+  transaction_hash: string | null;
+  failure_reason: string | null;
+  failure_count: number;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
