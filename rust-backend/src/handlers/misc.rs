@@ -10,7 +10,6 @@ use crate::{
     money_state::{
         INVOICE_ALREADY_TRANSITIONED_REASON, InvoicePaidOutcome, mark_invoice_paid_and_queue_payout,
     },
-    stellar::is_valid_account_public_key,
 };
 
 pub async fn health() -> Json<Value> {
@@ -22,7 +21,7 @@ pub async fn stellar_webhook(
     headers: HeaderMap,
     Json(payload): Json<StellarWebhookRequest>,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     if payload.public_id.is_empty() || payload.transaction_hash.is_empty() {
         return Err(AppError::bad_request(
             "publicId and transactionHash are required",
@@ -45,6 +44,8 @@ pub async fn stellar_webhook(
         .await
     {
         warn!(error = %e, "webhook_raw_payloads insert failed");
+    }
+
     // Idempotency check: if this transaction_hash is already recorded on any
     // invoice, the payment was already processed. Return success without
     // mutating state so duplicate deliveries are safe.
@@ -79,13 +80,6 @@ pub async fn stellar_webhook(
 
     if status == "pending" {
         let transaction = client.transaction().await?;
-        let outcome = mark_invoice_paid_and_queue_payout(
-            &transaction,
-            invoice_id,
-            &payload.transaction_hash,
-            &payload.rest,
-        )
-        .await?;
 
         let updated = transaction
             .execute(
@@ -112,8 +106,6 @@ pub async fn stellar_webhook(
         };
 
         if updated == 0 {
-            // Status changed between our read and the UPDATE (e.g. already paid
-            // by the reconcile cron). Safe to return without further mutation.
             drop(transaction);
             return Ok(Json(json!({
                 "received": true,
@@ -123,58 +115,15 @@ pub async fn stellar_webhook(
             })));
         }
 
-        transaction
-            .execute(
-                "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                &[&invoice_id, &"payment_detected", &payload.rest],
-            )
-            .await?;
-
-        let settlement_row = transaction
-            .query_opt(
-                "SELECT m.settlement_public_key
-                 FROM merchants m
-                 INNER JOIN invoices i ON i.merchant_id = m.id
-                 WHERE i.id = $1",
-                &[&invoice_id],
-            )
-            .await?;
-        let settlement_key: Option<String> = settlement_row.map(|r| r.get(0));
-        let settlement_key = settlement_key.unwrap_or_default();
-
-        let (queued, skip) = if !is_valid_account_public_key(&settlement_key) {
-            transaction
-                .execute(
-                    "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                    &[
-                        &invoice_id,
-                        &"payout_skipped_invalid_destination",
-                        &json!({ "reason": "invalid_settlement_public_key" }),
-                    ],
-                )
-                .await?;
-            (false, Some("invalid_settlement_public_key"))
-        } else {
-            let inserted = transaction
-                .execute(
-                    "INSERT INTO payouts (invoice_id, merchant_id, destination_public_key, amount_cents, asset_code, asset_issuer)
-                     SELECT id, merchant_id, (SELECT settlement_public_key FROM merchants WHERE merchants.id = invoices.merchant_id),
-                            net_amount_cents, asset_code, asset_issuer
-                     FROM invoices WHERE id = $1
-                     ON CONFLICT (invoice_id) DO NOTHING",
-                    &[&invoice_id],
-                )
-                .await?;
-            if inserted > 0 {
-                (true, None)
-            } else {
-                (false, Some("payout_already_queued"))
-            }
-        };
-
-        payout_queued = Some(queued);
-        payout_skip_reason = skip;
+        let outcome = mark_invoice_paid_and_queue_payout(
+            &transaction,
+            invoice_id,
+            &payload.transaction_hash,
+            &payload.rest,
+        )
+        .await?;
         transaction.commit().await?;
+
         match outcome {
             InvoicePaidOutcome::Applied {
                 payout_queued: queued,
@@ -204,18 +153,6 @@ pub async fn stellar_webhook(
     })))
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn raw_payload_json_includes_all_fields() {
-        let body = serde_json::json!({
-            "publicId": "inv_abc",
-            "transactionHash": "deadbeef",
-            "rest": { "amount": "10.00" },
-        });
-        assert_eq!(body["publicId"], "inv_abc");
-        assert_eq!(body["transactionHash"], "deadbeef");
-        assert!(body["rest"].is_object());
 /// Returns true when the postgres error is a unique-constraint violation (SQLSTATE 23505).
 fn is_unique_violation(e: &tokio_postgres::Error) -> bool {
     e.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
@@ -225,13 +162,8 @@ fn is_unique_violation(e: &tokio_postgres::Error) -> bool {
 mod tests {
     use super::is_unique_violation;
 
-    // is_unique_violation is a thin wrapper; we verify it does NOT fire on a
-    // generic error so the happy-path branch is never accidentally suppressed.
     #[test]
     fn non_unique_violation_error_is_not_flagged() {
-        // We cannot construct a tokio_postgres::Error with UNIQUE_VIOLATION in
-        // a unit test without a live DB, but we can assert the helper exists and
-        // compiles, and that the function signature is correct.
-        let _ = is_unique_violation; // referenced — compile check
+        let _ = is_unique_violation; // compile check
     }
 }

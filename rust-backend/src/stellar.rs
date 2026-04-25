@@ -1,7 +1,5 @@
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response, StatusCode};
-use serde::Deserialize;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use stellar_strkey::ed25519::PublicKey as Ed25519PublicKey;
 use tokio::time::{Duration, sleep};
@@ -33,6 +31,8 @@ async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
         delay_ms *= 2;
     }
     Err(AppError::Internal)
+}
+
 /// Maximum bytes for a Stellar text memo (protocol limit).
 pub const SETTLEMENT_MEMO_MAX_BYTES: usize = 28;
 
@@ -74,6 +74,8 @@ pub struct MemoMismatch {
     pub hash: String,
     pub received_memo: String,
     pub expected_memo: String,
+}
+
 #[derive(Debug)]
 pub enum TransactionStatus {
     Success,
@@ -379,9 +381,9 @@ mod tests {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_url: "http://localhost:3000".to_string(),
             public_app_url: "http://localhost:3000".to_string(),
-            database_url: "postgres://postgres:postgres@localhost:5432/astropay".to_string(),
+            database_url: crate::redact::Redacted::new("postgres://postgres:postgres@localhost:5432/astropay".to_string()),
             pgssl: "disable".to_string(),
-            session_secret: "secret".to_string(),
+            session_secret: crate::redact::Redacted::new("secret".to_string()),
             horizon_url: "https://horizon-testnet.stellar.org".to_string(),
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
             stellar_network: "TESTNET".to_string(),
@@ -391,7 +393,7 @@ mod tests {
             platform_treasury_secret_key: None,
             platform_fee_bps: 100,
             invoice_expiry_hours: 24,
-            cron_secret: "cron".to_string(),
+            cron_secret: crate::redact::Redacted::new("cron".to_string()),
             secure_cookies: false,
             login_rate_ip_window_secs: 600,
             login_rate_ip_max: 80,
@@ -400,9 +402,7 @@ mod tests {
             reconcile_scan_limit: 100,
             reconcile_scan_window_hours: 0,
             log_format: LogFormat::Human,
-            reconcile_scan_window_hours: 24,
             archive_retention_days: 30,
-            reconcile_scan_window_hours: 0,
         }
     }
 

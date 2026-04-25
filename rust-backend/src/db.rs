@@ -53,7 +53,7 @@ pub struct PayoutQueueStats {
 }
 
 pub fn create_pool(config: &Config) -> anyhow::Result<Pool> {
-    let pg = config.database_url.parse::<PgConfig>()?;
+    let pg = config.database_url.inner().parse::<PgConfig>()?;
     let manager_config = ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     };

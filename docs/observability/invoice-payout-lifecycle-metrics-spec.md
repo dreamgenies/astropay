@@ -241,3 +241,56 @@ These metrics support later alert work:
 - Confirm every documented transition exists in code paths under `usdc-payment-link-tool/lib/data.ts`, `app/api/cron/*`, `app/api/webhooks/stellar/route.ts`, and the Rust handler equivalents.
 - Confirm label values are bounded and do not include invoice IDs, hashes, wallet addresses, email addresses, cookies, or secrets.
 - Confirm first-success timings are only recorded once per lifecycle transition and are not re-emitted on retries or duplicate deliveries.
+
+## Log Redaction Rules
+
+Logs are useful for debugging but must never expose secrets or high-risk identifiers. The following rules apply to both runtimes.
+
+### What Must Never Appear in Logs
+
+| Category | Examples | Risk |
+|---|---|---|
+| Wallet secret keys | `PLATFORM_TREASURY_SECRET_KEY`, any `S...` Stellar key | Full fund loss if leaked |
+| Session tokens | Raw JWT from `astropay_session` cookie | Account takeover |
+| Cookie header values | `Cookie: astropay_session=eyJ...` | Session hijack |
+| Bearer tokens | `Authorization: Bearer <CRON_SECRET>` value | Cron/webhook auth bypass |
+| Database credentials | `postgres://user:pass@host/db` | DB access |
+| Webhook rotation secret | `WEBHOOK_SECRET_SECONDARY` | Webhook auth bypass |
+
+### What Is Safe to Log
+
+- Stellar **public** keys (`G...` 56-char strkeys) — these are on-chain and public
+- Invoice `public_id` (`inv_<hex>`) — opaque, not a secret
+- Transaction hashes — on-chain and public
+- Invoice status strings (`pending`, `paid`, `settled`, `expired`, `failed`)
+- Payout IDs (UUIDs) — internal references, not secrets
+- HTTP status codes, error codes, and structured error messages that do not embed raw values
+
+### Rust Backend — `redact` Module
+
+`rust-backend/src/redact.rs` provides:
+
+- **`Redacted<T>`** — newtype wrapper; `Debug` and `Display` emit `[REDACTED]`. Applied to `Config` fields: `session_secret`, `cron_secret`, `database_url`, `platform_treasury_secret_key`.
+- **`redact_authorization_header(value)`** — returns `"Bearer [REDACTED]"` or `"[REDACTED]"`.
+- **`redact_cookie_header(header)`** — preserves cookie names, replaces all values with `[REDACTED]`.
+- **`redact_connection_string(dsn)`** — replaces `user:pass@` with `[REDACTED]@`, keeps host and db name.
+
+The startup log in `main.rs` uses `redact_connection_string` so the `DATABASE_URL` host is visible but credentials are not.
+
+### Next.js — `lib/redact.ts`
+
+`usdc-payment-link-tool/lib/redact.ts` provides:
+
+- **`redactSecret(value)`** — redacts bearer tokens and raw secrets.
+- **`redactCookieHeader(header)`** — preserves cookie names, replaces values.
+- **`redactConnectionString(dsn)`** — same as Rust helper.
+- **`redactWalletKey(key)`** — passes through public keys (`G...` 56 chars), redacts everything else.
+
+### Verification Checklist
+
+- [ ] `Config` debug output does not contain `session_secret`, `cron_secret`, or `database_url` credentials — covered by `Redacted<T>` wrapper and tests in `config.rs`.
+- [ ] No `tracing::info!` or `tracing::error!` call passes a raw secret as a field value.
+- [ ] Cookie headers are never logged verbatim — use `redact_cookie_header` before any log call.
+- [ ] Authorization headers are never logged verbatim — use `redact_authorization_header`.
+- [ ] Sentry `beforeSend` scrubbing is configured separately if structured event data needs scrubbing.
+- [ ] Tests in `rust-backend/src/redact.rs` and `usdc-payment-link-tool/lib/redact.test.ts` pass in CI.

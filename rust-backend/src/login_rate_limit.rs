@@ -138,10 +138,12 @@ mod tests {
         lim.check_ip("1.2.3.4").await.unwrap();
         lim.check_ip("1.2.3.4").await.unwrap();
         lim.check_ip("1.2.3.4").await.unwrap();
-        assert!(matches!(
-            lim.check_ip("1.2.3.4").await,
-            Err(AppError::RateLimited { .. })
-        ));
+        let result = lim.check_ip("1.2.3.4").await;
+        assert!(result.is_err(), "4th attempt must be rate-limited");
+        assert_eq!(
+            result.unwrap_err().status,
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        );
     }
 
     #[tokio::test]
