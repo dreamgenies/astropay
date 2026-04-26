@@ -20,8 +20,7 @@ use crate::{
     },
     settle::{backoff_seconds, is_backoff_elapsed},
     stellar::{
-        PaymentScanResult, fetch_treasury_payments,
-        find_payment_for_invoice, invoice_is_expired,
+        PaymentScanResult, fetch_treasury_payments, find_payment_for_invoice, invoice_is_expired,
     },
 };
 
@@ -81,7 +80,12 @@ pub async fn reconcile(
                    AND ($4::bigint = 0 OR created_at >= NOW() - ($4::bigint * INTERVAL '1 hour'))
                  ORDER BY created_at ASC, id ASC
                  LIMIT $3",
-                &[&cursor_created_at, &cursor_id, &RECONCILE_PAGE_SIZE, &scan_window_hours],
+                &[
+                    &cursor_created_at,
+                    &cursor_id,
+                    &RECONCILE_PAGE_SIZE,
+                    &scan_window_hours,
+                ],
             )
             .await?;
 
@@ -111,7 +115,10 @@ pub async fn reconcile(
             }
 
             match find_payment_for_invoice(&state.config, &invoice).await {
-                Err(AppError { code: crate::error::ErrorCode::HorizonUnavailable, .. }) => {
+                Err(AppError {
+                    code: crate::error::ErrorCode::HorizonUnavailable,
+                    ..
+                }) => {
                     warn!(public_id = %invoice.public_id, "Horizon unavailable during reconcile — skipping invoice");
                     results.push(json!({ "publicId": invoice.public_id, "action": "skipped_horizon_unavailable" }));
                 }
@@ -132,6 +139,25 @@ pub async fn reconcile(
                         "hash": m.hash,
                         "receivedAssetCode": m.received_asset_code,
                         "expectedAssetCode": m.expected_asset_code,
+                    }));
+                }
+                Ok(PaymentScanResult::AmountMismatch(mismatch)) => {
+                    if !dry_run {
+                        client.execute(
+                            "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
+                            &[&invoice.id, &"payment_amount_mismatch", &json!({
+                                "hash": mismatch.hash,
+                                "receivedAmount": mismatch.received_amount,
+                                "expectedAmount": mismatch.expected_amount,
+                            })],
+                        ).await?;
+                    }
+                    results.push(json!({
+                        "publicId": invoice.public_id,
+                        "action": "amount_mismatch",
+                        "hash": mismatch.hash,
+                        "receivedAmount": mismatch.received_amount,
+                        "expectedAmount": mismatch.expected_amount,
                     }));
                 }
                 Ok(PaymentScanResult::MemoMismatch(mismatch)) => {
@@ -169,7 +195,10 @@ pub async fn reconcile(
                         .await;
                     let updated = match updated {
                         Ok(n) => n,
-                        Err(ref e) if e.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) => {
+                        Err(ref e)
+                            if e.code()
+                                == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
+                        {
                             results.push(json!({ "publicId": invoice.public_id, "action": "already_processed", "txHash": payment.hash }));
                             continue;
                         }
@@ -180,11 +209,18 @@ pub async fn reconcile(
                         continue;
                     }
                     let outcome = mark_invoice_paid_and_queue_payout(
-                        &transaction, invoice.id, &payment.hash, &payment.payment,
-                    ).await?;
+                        &transaction,
+                        invoice.id,
+                        &payment.hash,
+                        &payment.payment,
+                    )
+                    .await?;
                     transaction.commit().await?;
                     match outcome {
-                        InvoicePaidOutcome::Applied { payout_queued, payout_skip_reason } => {
+                        InvoicePaidOutcome::Applied {
+                            payout_queued,
+                            payout_skip_reason,
+                        } => {
                             results.push(json!({
                                 "publicId": invoice.public_id,
                                 "action": "paid",
@@ -229,9 +265,11 @@ pub async fn purge_sessions(
 ) -> Result<Json<Value>, AppError> {
     authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
     let client = state.pool.get().await?;
-    let deleted = client.execute("DELETE FROM sessions WHERE expires_at < NOW()", &[]).await?;
+    let deleted = client
+        .execute("DELETE FROM sessions WHERE expires_at < NOW()", &[])
+        .await?;
     let body = json!({ "deleted": deleted });
-    
+
     let _ = client.execute(
         "INSERT INTO cron_runs (job_type, started_at, finished_at, success, metadata) VALUES ('purge_sessions', NOW(), NOW(), true, $1)",
         &[&PgJson(&body)]
@@ -278,8 +316,9 @@ pub async fn archive(
         let ids: Vec<Uuid> = moved_invoices.iter().map(|r| r.get(0)).collect();
 
         // Move payouts
-        transaction.execute(
-            "INSERT INTO archived_payouts (
+        transaction
+            .execute(
+                "INSERT INTO archived_payouts (
                 id, invoice_id, merchant_id, destination_public_key, amount_cents,
                 asset_code, asset_issuer, status, transaction_hash, failure_reason,
                 failure_count, last_failure_at, last_failure_reason, created_at, updated_at
@@ -289,9 +328,12 @@ pub async fn archive(
                 asset_code, asset_issuer, status, transaction_hash, failure_reason,
                 failure_count, last_failure_at, last_failure_reason, created_at, updated_at
             FROM payouts WHERE invoice_id = ANY($1)",
-            &[&ids]
-        ).await?;
-        transaction.execute("DELETE FROM payouts WHERE invoice_id = ANY($1)", &[&ids]).await?;
+                &[&ids],
+            )
+            .await?;
+        transaction
+            .execute("DELETE FROM payouts WHERE invoice_id = ANY($1)", &[&ids])
+            .await?;
 
         // Move payment events
         transaction.execute(
@@ -300,12 +342,17 @@ pub async fn archive(
             FROM payment_events WHERE invoice_id = ANY($1)",
             &[&ids]
         ).await?;
-        transaction.execute("DELETE FROM payment_events WHERE invoice_id = ANY($1)", &[&ids]).await?;
+        transaction
+            .execute(
+                "DELETE FROM payment_events WHERE invoice_id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
     }
 
     transaction.commit().await?;
     let body = json!({ "archivedCount": count, "retentionDays": retention_days });
-    
+
     let _ = client.execute(
         "INSERT INTO cron_runs (job_type, started_at, finished_at, success, metadata) VALUES ('archive', NOW(), NOW(), true, $1)",
         &[&PgJson(&body)]
@@ -374,7 +421,13 @@ pub async fn settle(
                          (payout_id, invoice_id, merchant_id, failure_count, last_failure_reason)
                      VALUES ($1, $2, $3, $4, $5)
                      ON CONFLICT (payout_id) DO NOTHING",
-                    &[&payout_id, &invoice_id, &merchant_id, &new_count, &failure_reason],
+                    &[
+                        &payout_id,
+                        &invoice_id,
+                        &merchant_id,
+                        &new_count,
+                        &failure_reason,
+                    ],
                 )
                 .await?;
                 tx.execute(
@@ -629,7 +682,9 @@ pub async fn replay_invoice(
     }
 
     match find_payment_for_invoice(&state.config, &invoice).await? {
-        PaymentScanResult::NotFound | PaymentScanResult::AssetMismatch(_) | PaymentScanResult::MemoMismatch(_) => Ok(Json(json!({
+        PaymentScanResult::NotFound
+        | PaymentScanResult::AssetMismatch(_)
+        | PaymentScanResult::MemoMismatch(_) => Ok(Json(json!({
             "dryRun": dry_run,
             "publicId": invoice.public_id,
             "action": "pending"
@@ -671,7 +726,10 @@ pub async fn replay_invoice(
             .await?;
             transaction.commit().await?;
             match outcome {
-                InvoicePaidOutcome::Applied { payout_queued, payout_skip_reason } => Ok(Json(json!({
+                InvoicePaidOutcome::Applied {
+                    payout_queued,
+                    payout_skip_reason,
+                } => Ok(Json(json!({
                     "dryRun": false,
                     "publicId": invoice.public_id,
                     "action": "paid",
@@ -881,9 +939,9 @@ mod tests {
 
     #[test]
     fn known_hash_is_not_orphan() {
-        use std::collections::HashSet;
-        use serde_json::json;
         use crate::stellar::TreasuryPayment;
+        use serde_json::json;
+        use std::collections::HashSet;
 
         let payments = vec![
             TreasuryPayment {
@@ -917,8 +975,8 @@ mod tests {
 
     #[test]
     fn all_known_hashes_yields_no_orphans() {
-        use std::collections::HashSet;
         use crate::stellar::TreasuryPayment;
+        use std::collections::HashSet;
 
         let payments = vec![TreasuryPayment {
             transaction_hash: "abc123".to_string(),
@@ -941,8 +999,8 @@ mod tests {
 
     #[test]
     fn empty_treasury_payments_yields_no_orphans() {
-        use std::collections::HashSet;
         use crate::stellar::TreasuryPayment;
+        use std::collections::HashSet;
 
         let payments: Vec<TreasuryPayment> = vec![];
         let known: HashSet<String> = HashSet::new();

@@ -120,6 +120,33 @@ describe('findPaymentForInvoice', () => {
     }
   });
 
+  it('returns amountMismatch when destination+asset+memo match but amount differs', async () => {
+    mockPaymentsCall.mockResolvedValue({
+      records: [
+        {
+          type: 'payment',
+          to: 'DEST_KEY',
+          asset_code: 'USDC',
+          asset_issuer: 'ISSUER_A',
+          amount: '11.00',           // wrong amount
+          transaction_hash: 'tx_hash_5',
+        },
+      ],
+    });
+    mockTransactionCall.mockResolvedValue({ memo: 'astro_deadbeef' });
+
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    const result = await findPaymentForInvoice(BASE_INVOICE);
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveProperty('amountMismatch');
+    if (result && 'amountMismatch' in result) {
+      expect(result.amountMismatch.receivedAmount).toBe('11.00');
+      expect(result.amountMismatch.expectedAmount).toBe('10.00');
+      expect(result.amountMismatch.hash).toBe('tx_hash_5');
+    }
+  });
+
   it('returns memoMismatch when destination+asset+amount match but memo is wrong', async () => {
     mockPaymentsCall.mockResolvedValue({
       records: [

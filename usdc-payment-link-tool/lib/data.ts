@@ -4,7 +4,7 @@ import { createQrDataUrl, buildCheckoutUrl } from '@/lib/stellar';
 import { generateMemo, generatePublicId } from '@/lib/security';
 import { isValidSettlementPublicKey } from '@/lib/stellarPublicKey';
 import type { Invoice, Merchant, Payout } from '@/lib/types';
-import type { AssetMismatch, MemoMismatch } from '@/lib/stellar';
+import type { AssetMismatch, MemoMismatch, AmountMismatch } from '@/lib/stellar';
 
 export type MarkInvoicePaidPayoutResult = {
   payoutQueued: boolean;
@@ -271,6 +271,14 @@ export const recordMemoMismatch = async (invoiceId: string, mismatch: MemoMismat
   await query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
     invoiceId,
     'payment_memo_mismatch',
+    JSON.stringify(mismatch),
+  ]);
+};
+
+export const recordAmountMismatch = async (invoiceId: string, mismatch: AmountMismatch) => {
+  await query('INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)', [
+    invoiceId,
+    'payment_amount_mismatch',
     JSON.stringify(mismatch),
   ]);
 };
