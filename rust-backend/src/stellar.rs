@@ -23,7 +23,10 @@ async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
             return resp.error_for_status().map_err(|_| AppError::Internal);
         }
         if attempt == MAX_RETRIES {
-            warn!(url, "horizon rate-limited after {} retries, giving up", MAX_RETRIES);
+            warn!(
+                url,
+                "horizon rate-limited after {} retries, giving up", MAX_RETRIES
+            );
             return Err(AppError::Internal);
         }
         warn!(url, attempt, delay_ms, "horizon 429 — backing off");
@@ -76,6 +79,14 @@ pub struct MemoMismatch {
     pub expected_memo: String,
 }
 
+/// Emitted when destination + asset + memo match but the payment amount differs.
+#[derive(Debug, Clone, Serialize)]
+pub struct AmountMismatch {
+    pub hash: String,
+    pub received_amount: String,
+    pub expected_amount: String,
+}
+
 #[derive(Debug)]
 pub enum TransactionStatus {
     Success,
@@ -87,6 +98,7 @@ pub enum TransactionStatus {
 pub enum PaymentScanResult {
     Match(PaymentMatch),
     AssetMismatch(AssetMismatch),
+    AmountMismatch(AmountMismatch),
     MemoMismatch(MemoMismatch),
     NotFound,
 }
@@ -101,7 +113,11 @@ pub async fn confirm_transaction(
         config.horizon_url.trim_end_matches('/'),
         tx_hash
     );
-    let resp = Client::new().get(url).send().await.map_err(|_| AppError::Internal)?;
+    let resp = Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| AppError::Internal)?;
     if resp.status() == 404 {
         return Ok(TransactionStatus::NotFound);
     }
@@ -234,6 +250,28 @@ pub async fn find_payment_for_invoice(
                 expected_asset_issuer: invoice.asset_issuer.clone(),
                 amount: expected_amount.clone(),
             }));
+        }
+
+        if asset_matches && !amount_matches {
+            let tx_url = format!(
+                "{}/transactions/{}",
+                config.horizon_url.trim_end_matches('/'),
+                record.transaction_hash
+            );
+            let tx = horizon_get(&client, &tx_url)
+                .await?
+                .json::<HorizonTransaction>()
+                .await
+                .map_err(|_| AppError::Internal)?;
+
+            if tx.memo == invoice.memo {
+                return Ok(PaymentScanResult::AmountMismatch(AmountMismatch {
+                    hash: record.transaction_hash,
+                    received_amount: record.amount.unwrap_or_default(),
+                    expected_amount: expected_amount.clone(),
+                }));
+            }
+            continue;
         }
 
         if !amount_matches || !asset_matches {
@@ -381,7 +419,9 @@ mod tests {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_url: "http://localhost:3000".to_string(),
             public_app_url: "http://localhost:3000".to_string(),
-            database_url: crate::redact::Redacted::new("postgres://postgres:postgres@localhost:5432/astropay".to_string()),
+            database_url: crate::redact::Redacted::new(
+                "postgres://postgres:postgres@localhost:5432/astropay".to_string(),
+            ),
             pgssl: "disable".to_string(),
             session_secret: crate::redact::Redacted::new("secret".to_string()),
             horizon_url: "https://horizon-testnet.stellar.org".to_string(),
@@ -572,9 +612,30 @@ mod tests {
 
         let config = sample_config();
         let ops = vec![
-            RawOp { record_type: "payment",       asset_code: Some("USDC"), asset_issuer: Some("ISSUER"), transaction_hash: "hash_usdc",    from: "GSENDER1", amount: "20.00" },
-            RawOp { record_type: "payment",       asset_code: Some("XLM"),  asset_issuer: Some("native"), transaction_hash: "hash_xlm",    from: "GSENDER2", amount: "5.00"  },
-            RawOp { record_type: "create_account", asset_code: Some("USDC"), asset_issuer: Some("ISSUER"), transaction_hash: "hash_create", from: "GSENDER3", amount: "0.00"  },
+            RawOp {
+                record_type: "payment",
+                asset_code: Some("USDC"),
+                asset_issuer: Some("ISSUER"),
+                transaction_hash: "hash_usdc",
+                from: "GSENDER1",
+                amount: "20.00",
+            },
+            RawOp {
+                record_type: "payment",
+                asset_code: Some("XLM"),
+                asset_issuer: Some("native"),
+                transaction_hash: "hash_xlm",
+                from: "GSENDER2",
+                amount: "5.00",
+            },
+            RawOp {
+                record_type: "create_account",
+                asset_code: Some("USDC"),
+                asset_issuer: Some("ISSUER"),
+                transaction_hash: "hash_create",
+                from: "GSENDER3",
+                amount: "0.00",
+            },
         ];
 
         let filtered: Vec<_> = ops

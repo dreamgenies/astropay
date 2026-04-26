@@ -61,9 +61,16 @@ export type MemoMismatch = {
   expectedMemo: string;
 };
 
+export type AmountMismatch = {
+  hash: string;
+  receivedAmount: string;
+  expectedAmount: string;
+};
+
 export type PaymentScanResult =
   | { hash: string; payment: any; memo: string }
   | { assetMismatch: AssetMismatch }
+  | { amountMismatch: AmountMismatch }
   | { memoMismatch: MemoMismatch }
   | null;
 
@@ -88,6 +95,19 @@ export const findPaymentForInvoice = async (
           amount: expectedAmount,
         },
       };
+    }
+    if (assetMatches && !amountMatches) {
+      const tx = await getServer().transactions().transaction(record.transaction_hash).call();
+      if (tx.memo === invoice.memo) {
+        return {
+          amountMismatch: {
+            hash: record.transaction_hash,
+            receivedAmount: record.amount ?? '',
+            expectedAmount,
+          },
+        };
+      }
+      continue;
     }
     if (!amountMatches || !assetMatches) continue;
     const tx = await getServer().transactions().transaction(record.transaction_hash).call();

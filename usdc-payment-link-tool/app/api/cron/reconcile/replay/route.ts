@@ -49,6 +49,24 @@ export async function POST(request: Request) {
     });
   }
 
+  if ('amountMismatch' in result) {
+    return ok({
+      dryRun,
+      publicId: invoice.public_id,
+      action: 'amount_mismatch',
+      ...result.amountMismatch,
+    });
+  }
+
+  if ('memoMismatch' in result) {
+    return ok({
+      dryRun,
+      publicId: invoice.public_id,
+      action: 'memo_mismatch',
+      ...result.memoMismatch,
+    });
+  }
+
   const payment = result;
 
   if (dryRun) {
