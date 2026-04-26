@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/cron/archive", get(handlers::cron::archive))
         .route("/api/cron/payouts/:payout_id/replay", axum::routing::post(handlers::cron::replay_payout))
+        .route("/api/cron/payouts/:payout_id/claim", axum::routing::post(handlers::cron::claim_payout))
         .route("/api/cron/orphan-payments", get(handlers::cron::orphan_payments))
         .route("/api/cron/payout-health", get(handlers::cron::payout_health))
         .route(

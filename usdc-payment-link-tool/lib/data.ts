@@ -209,6 +209,11 @@ export const queuedPayouts = async (limit = 50) => {
   return result.rows;
 };
 
+export const claimPayout = async (payoutId: string, workerId: string): Promise<boolean> => {
+  const result = await query(`UPDATE payouts SET processing_worker_id = $1, processing_started_at = NOW(), updated_at = NOW() WHERE id = $2 AND status = 'queued' AND processing_worker_id IS NULL`, [workerId, payoutId]);
+  return result.rowCount > 0;
+};
+
 /** Returns payouts that have been submitted to Stellar but not yet confirmed as settled. */
 export const submittedPayouts = async () => {
   const result = await query<any>(
