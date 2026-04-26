@@ -13,7 +13,10 @@ export function InvoiceCreateForm() {
     setError('');
     const res = await fetch('/api/invoices', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-correlation-id': crypto.randomUUID()
+      },
       body: JSON.stringify(Object.fromEntries(formData.entries())),
     });
     const data = await res.json();

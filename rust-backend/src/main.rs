@@ -21,6 +21,7 @@ use axum::{
     routing::{get, post},
 };
 use deadpool_postgres::Pool;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::{
     DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer,
 };
@@ -97,11 +98,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .make_span_with(DefaultMakeSpan::new().include_headers(true).level(Level::INFO))
                 .on_request(DefaultOnRequest::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         )
+        .layer(PropagateRequestIdLayer::new(http::header::HeaderName::from_static("x-correlation-id")))
+        .layer(SetRequestIdLayer::new(http::header::HeaderName::from_static("x-correlation-id"), MakeRequestUuid))
         .with_state(state);
 
     tracing::info!(
