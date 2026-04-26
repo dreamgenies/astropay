@@ -684,7 +684,8 @@ pub async fn replay_invoice(
     match find_payment_for_invoice(&state.config, &invoice).await? {
         PaymentScanResult::NotFound
         | PaymentScanResult::AssetMismatch(_)
-        | PaymentScanResult::MemoMismatch(_) => Ok(Json(json!({
+        | PaymentScanResult::MemoMismatch(_)
+        | PaymentScanResult::AmountMismatch(_) => Ok(Json(json!({
             "dryRun": dry_run,
             "publicId": invoice.public_id,
             "action": "pending"
