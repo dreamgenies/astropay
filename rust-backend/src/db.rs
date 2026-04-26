@@ -149,6 +149,7 @@ pub async fn payout_queue_stats(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use super::validate_ssl_mode;
 
     #[test]
     fn retention_policy_migration_defines_config_table_and_extends_job_type() {
@@ -487,6 +488,54 @@ mod tests {
 #[cfg(test)]
 mod checkout_attempt_tests {
     use std::path::Path;
+
+    #[test]
+    fn checkout_attempts_migration_defines_table_columns_and_indexes() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/021_checkout_attempts.sql");
+        let sql = std::fs::read_to_string(path).expect("read 021_checkout_attempts.sql");
+
+        // Table must be idempotent.
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS checkout_attempts"));
+
+        // Required columns.
+        assert!(sql.contains("invoice_id"), "must have invoice_id FK column");
+        assert!(sql.contains("action"), "must have action column");
+        assert!(sql.contains("status"), "must have status column");
+        assert!(sql.contains("attempted_at"), "must have attempted_at timestamp");
+        assert!(sql.contains("payload"), "must have payload JSONB column");
+        assert!(sql.contains("error_detail"), "must have nullable error_detail column");
+
+        // FK to invoices with cascade delete.
+        assert!(
+            sql.contains("REFERENCES invoices(id) ON DELETE CASCADE"),
+            "invoice_id must reference invoices with cascade delete"
+        );
+
+        // Action and status CHECK constraints.
+        assert!(
+            sql.contains("'build'") && sql.contains("'submit'"),
+            "action CHECK must include 'build' and 'submit'"
+        );
+        assert!(
+            sql.contains("'initiated'") && sql.contains("'succeeded'") && sql.contains("'failed'"),
+            "status CHECK must include 'initiated', 'succeeded', and 'failed'"
+        );
+
+        // Indexes must be idempotent.
+        assert!(
+            sql.contains("checkout_attempts_invoice_id_attempted_at_idx"),
+            "must define per-invoice lookup index"
+        );
+        assert!(
+            sql.contains("checkout_attempts_action_status_attempted_at_idx"),
+            "must define action+status alerting index"
+        );
+        assert!(
+            sql.matches("CREATE INDEX IF NOT EXISTS").count() >= 2,
+            "both indexes must use IF NOT EXISTS"
+        );
+    }
 
     #[test]
     fn last_checkout_attempt_migration_adds_nullable_column() {
