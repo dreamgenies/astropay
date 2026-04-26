@@ -8,6 +8,11 @@
 --
 -- sessions already has sessions_expires_at_id_idx (002_session_expiry_indexes.sql)
 -- which the existing purge_sessions cron uses; no new index is needed there.
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS payment_events_created_at_idx;
+--   The purge_payment_events cron will fall back to a full sequential scan.
+--   No data is affected.
 
 CREATE INDEX IF NOT EXISTS payment_events_created_at_idx
     ON payment_events (created_at ASC);

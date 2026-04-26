@@ -72,3 +72,40 @@ SELECT cleanup_performance_test_data();
 - Varied payout states including failures
 - Multiple event types per invoice
 - Merchant data spread across multiple businesses
+
+
+## Migration Rollback Notes (AP-250)
+
+### Overview
+Every migration file under `usdc-payment-link-tool/migrations/` now contains an inline rollback note in the SQL header comment. Migrations remain forward-only — no down-migration scripts are provided — but each file documents the exact SQL an operator needs to reverse the change if required.
+
+### Rollback Note Format
+Each note follows this pattern:
+
+```sql
+-- Rollback:
+--   <SQL to reverse the change>
+--   <Any warnings about data loss or ordering requirements>
+```
+
+### Key Rollback Warnings By Migration
+
+| Migration | Risk Level | Notes |
+|---|---|---|
+| `001_init.sql` | Destructive | Drops all core tables; only safe on a fresh or test database |
+| `005_payout_dead_letter.sql` | Data risk | Restoring the old status CHECK will fail if any `dead_lettered` rows exist |
+| `007_cron_runs_purge_sessions.sql` | Data risk | Restoring the old CHECK will fail if `purge_sessions` rows exist in `cron_runs` |
+| `007_invoice_transaction_hash_unique.sql` | Race risk | Removing the unique index re-exposes the concurrent-webhook race window |
+| `011_webhook_deliveries.sql` | Functional risk | Dropping the table disables DB-level replay detection |
+| `013_merchant_email_citext.sql` | Data risk | Rollback makes email uniqueness case-sensitive again; audit for case-variant duplicates first |
+| `013_retention_policy.sql` | Data risk | Restoring the old CHECK will fail if `purge_payment_events` rows exist in `cron_runs` |
+| `017_payout_row_locking.sql` | Race risk | Stop all settle workers before rolling back to avoid losing in-flight lock records |
+| `019_performance_test_fixtures.sql` | Data risk | Use `cleanup_performance_test_data()` before dropping the function; do not use test data patterns for real records |
+
+### Verification Steps
+Before applying a rollback in production:
+1. Confirm no application code depends on the schema change being reversed.
+2. Check for rows that would violate a restored constraint (especially status CHECK columns).
+3. Stop any cron workers that write to affected tables.
+4. Run the rollback SQL in a transaction and verify row counts before committing.
+5. Re-run the migration test suite (`cargo test`) to confirm the remaining schema is consistent.

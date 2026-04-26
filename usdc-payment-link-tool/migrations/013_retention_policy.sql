@@ -12,6 +12,18 @@
 -- The retention_config table is the single source of truth for these values.
 -- The purge cron job reads them at runtime; changing a row here takes effect on the
 -- next cron run without a code deploy.
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS retention_config;
+--   ALTER TABLE cron_runs DROP CONSTRAINT IF EXISTS cron_runs_job_type_check;
+--   ALTER TABLE cron_runs ADD CONSTRAINT cron_runs_job_type_check
+--       CHECK (job_type = ANY (ARRAY[
+--           'reconcile'::text, 'settle'::text, 'purge_sessions'::text
+--       ]));
+--   WARNING: any existing cron_runs rows with job_type = 'purge_payment_events'
+--   will violate the restored constraint. Delete or update those rows first.
+--   The purge_payment_events cron job must also be disabled before rolling back
+--   to prevent it from writing rows that violate the constraint.
 
 CREATE TABLE IF NOT EXISTS retention_config (
     table_name  TEXT PRIMARY KEY,

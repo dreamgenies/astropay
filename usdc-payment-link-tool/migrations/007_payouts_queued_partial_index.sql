@@ -20,6 +20,11 @@
 -- The existing payouts_status_idx is kept: it is still used by queries that
 -- filter on other status values (e.g. the dead-letter escalation path that
 -- scans WHERE status = 'failed').
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS payouts_queued_created_at_idx;
+--   The settle cron will fall back to payouts_status_idx with a separate sort step.
+--   No data is affected.
 
 CREATE INDEX IF NOT EXISTS payouts_queued_created_at_idx
     ON payouts (created_at ASC, id)

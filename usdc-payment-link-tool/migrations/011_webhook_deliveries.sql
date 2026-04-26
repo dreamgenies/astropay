@@ -5,6 +5,12 @@
 -- Issue #159: Webhook secret rotation support.
 -- The application layer handles dual-secret validation; no schema change needed.
 -- This table is used only for replay detection.
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS webhook_deliveries;
+--   Removing this table disables DB-level replay detection. The application will
+--   lose the idempotency guard for duplicate webhook deliveries within the replay
+--   window. Ensure application-level deduplication is in place before rolling back.
 
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   delivery_id TEXT PRIMARY KEY,

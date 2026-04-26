@@ -12,6 +12,11 @@
 -- today. Add an index in a follow-up migration once a real query
 -- pattern (e.g. "invoices with a checkout attempt in the last N
 -- minutes") lands in application code.
+--
+-- Rollback:
+--   ALTER TABLE invoices DROP COLUMN IF EXISTS last_checkout_attempt_at;
+--   No data integrity risk; the column is nullable and not referenced by
+--   any constraint or index in this migration.
 
 ALTER TABLE invoices
   ADD COLUMN last_checkout_attempt_at TIMESTAMPTZ;

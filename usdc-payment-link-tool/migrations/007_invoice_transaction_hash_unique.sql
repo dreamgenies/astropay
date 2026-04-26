@@ -11,6 +11,12 @@
 --
 -- NULL values are excluded from uniqueness (SQL standard), so invoices that
 -- have not yet been paid (transaction_hash IS NULL) are unaffected.
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS invoices_transaction_hash_unique_idx;
+--   Removing this index re-exposes the race window where two concurrent webhook
+--   deliveries with the same transaction hash could both mutate invoice state.
+--   Ensure application-level idempotency guards are in place before rolling back.
 
 CREATE UNIQUE INDEX IF NOT EXISTS invoices_transaction_hash_unique_idx
     ON invoices (transaction_hash)

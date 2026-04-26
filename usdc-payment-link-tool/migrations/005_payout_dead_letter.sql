@@ -2,6 +2,16 @@
 -- A payout is moved to dead-letter after PAYOUT_DEAD_LETTER_THRESHOLD consecutive failures
 -- (application constant, currently 5). The original payouts row is kept for audit; status
 -- is set to 'dead_lettered' (added to the CHECK constraint below).
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS payout_dead_letters;
+--   ALTER TABLE payouts DROP CONSTRAINT IF EXISTS payouts_status_check;
+--   ALTER TABLE payouts ADD CONSTRAINT payouts_status_check
+--       CHECK (status IN ('queued', 'submitted', 'settled', 'failed'));
+--   ALTER TABLE payouts DROP COLUMN IF EXISTS failure_count;
+--   ALTER TABLE payouts DROP COLUMN IF EXISTS last_failure_at;
+--   WARNING: any payouts currently in 'dead_lettered' status will violate the
+--   restored constraint. Resolve or re-queue those rows before rolling back.
 
 -- Extend payouts status to include dead_lettered.
 ALTER TABLE payouts

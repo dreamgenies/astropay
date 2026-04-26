@@ -1,5 +1,10 @@
 -- Migration: Add deployment events tracking table
 -- This supports the rollback playbook by providing audit trail
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS deployment_events;
+--   No application logic depends on this table for live request handling;
+--   it is an audit/observability table only. Dropping it loses deployment history.
 
 CREATE TABLE IF NOT EXISTS deployment_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
