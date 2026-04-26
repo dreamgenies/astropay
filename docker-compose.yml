@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: astropay
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rust-backend:
+    build:
+      context: ./rust-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/astropay
+      CRON_SECRET: test_secret
+      RECONCILE_SCAN_LIMIT: 1000
+      RECONCILE_SCAN_WINDOW_HOURS: 24
+      SETTLE_BATCH_SIZE: 50
+      ORPHAN_SCAN_LIMIT: 50
+      LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nextjs:
+    build:
+      context: ./usdc-payment-link-tool
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/astropay
+      NEXT_PUBLIC_RUST_BACKEND_URL: http://rust-backend:8080
+      CRON_SECRET: test_secret
+      RECONCILE_SCAN_LIMIT: 1000
+      RECONCILE_SCAN_WINDOW_HOURS: 24
+      SETTLE_BATCH_SIZE: 50
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rust-backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

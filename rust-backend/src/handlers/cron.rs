@@ -1038,6 +1038,27 @@ mod replay_tests {
     }
 }
 
+/// Claims a payout for processing to prevent concurrent settlement.
+///
+/// Returns `true` if the payout was successfully claimed, `false` if it was already claimed or not in queued status.
+///
+/// Query params:
+/// - `worker_id`: identifier for the worker claiming the payout
+///
+/// Trigger via `POST /api/cron/payouts/{id}/claim` with `Authorization: Bearer <CRON_SECRET>` and JSON body `{"workerId": "worker-1"}`.
+pub async fn claim_payout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(payout_id): Path<Uuid>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<Value>, AppError> {
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
+    let worker_id = body["workerId"].as_str().ok_or_else(|| AppError::bad_request("workerId required"))?;
+    let client = state.pool.get().await?;
+    let claimed = crate::db::claim_payout_for_processing(&client, payout_id, worker_id).await?;
+    Ok(Json(json!({ "claimed": claimed })))
+}
+
 /// `GET /api/cron/payout-health`
 ///
 /// Returns a point-in-time snapshot of the payout queue so operators can detect
