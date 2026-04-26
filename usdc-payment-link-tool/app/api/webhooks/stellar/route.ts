@@ -7,6 +7,7 @@ import {
   recordWebhookDelivery,
   type MarkInvoicePaidPayoutResult,
 } from '@/lib/data';
+import { recordWebhookOutcome } from '@/lib/webhookMetrics';
 
 // Issue #159: Accept primary secret (CRON_SECRET) and optional secondary
 // (WEBHOOK_SECRET_SECONDARY) so secrets can be rotated without downtime.
@@ -22,13 +23,19 @@ function authorized(request: Request): boolean {
 }
 
 export async function POST(request: Request) {
-  if (!authorized(request)) return fail('Unauthorized', 401);
+  if (!authorized(request)) {
+    // AP-162: count auth failures so operators can detect misconfigured callers.
+    await recordWebhookOutcome('auth_error');
+    return fail('Unauthorized', 401);
+  }
 
   // Issue #162: Replay detection — reject duplicate deliveries within the window.
   const deliveryId = request.headers.get('x-delivery-id');
   if (deliveryId) {
     const isNew = await recordWebhookDelivery(deliveryId, env.webhookReplayWindowSecs);
     if (!isNew) {
+      // AP-162: replay-window duplicate — count as mismatch (not a resolved invoice).
+      await recordWebhookOutcome('mismatch');
       return ok({ received: true, duplicate: true, deliveryId });
     }
   }
@@ -41,15 +48,34 @@ export async function POST(request: Request) {
   // Idempotency guard: if this transaction hash is already recorded, the
   // payment was already processed. Return success without mutating state.
   if (await isTransactionHashAlreadyProcessed(transactionHash)) {
+    // AP-162: already-processed hash → duplicate delivery.
+    await recordWebhookOutcome('duplicate');
     return ok({ received: true, alreadyProcessed: true, transactionHash });
   }
 
   const invoice = await getInvoiceByPublicId(publicId);
-  if (!invoice) return fail('Invoice not found', 404);
+  if (!invoice) {
+    // AP-162: no invoice found for the publicId supplied by the caller.
+    await recordWebhookOutcome('miss');
+    return fail('Invoice not found', 404);
+  }
 
   let payout: MarkInvoicePaidPayoutResult | undefined;
   if (invoice.status === 'pending') {
-    payout = await markInvoicePaid({ invoiceId: invoice.id, transactionHash, payload: body });
+    try {
+      payout = await markInvoicePaid({ invoiceId: invoice.id, transactionHash, payload: body });
+      // AP-162: invoice was pending and is now paid — this is a successful resolution.
+      await recordWebhookOutcome('resolved');
+    } catch {
+      await recordWebhookOutcome('error');
+      throw;
+    }
+  } else if (invoice.status === 'expired' || invoice.status === 'failed') {
+    // AP-162: invoice is in a terminal non-paid state; payment cannot be applied.
+    await recordWebhookOutcome('stale');
+  } else {
+    // AP-162: invoice already paid or settled — duplicate delivery.
+    await recordWebhookOutcome('duplicate');
   }
 
   return ok({

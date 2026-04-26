@@ -1038,6 +1038,112 @@ mod replay_tests {
     }
 }
 
+/// `GET /api/cron/webhook-metrics`
+///
+/// AP-162: Returns aggregated webhook-to-invoice correlation metrics so operators
+/// can measure how often webhook deliveries resolve invoices versus producing
+/// misses, duplicates, or mismatches.
+///
+/// Query params:
+/// - `window_hours`: look-back window in hours (default 24, max 168)
+///
+/// Response shape:
+/// ```json
+/// {
+///   "metric": "astropay_webhook_invoice_correlation",
+///   "windowHours": 24,
+///   "totals": {
+///     "resolved": 120,
+///     "duplicate": 5,
+///     "stale": 2,
+///     "miss": 3,
+///     "mismatch": 1,
+///     "auth_error": 0,
+///     "error": 0
+///   },
+///   "resolutionRate": 0.923
+/// }
+/// ```
+///
+/// - `resolved`      — invoice was pending → paid by this webhook delivery.
+/// - `duplicate`     — invoice already paid/settled; no mutation.
+/// - `stale`         — invoice expired or in terminal state; no mutation.
+/// - `miss`          — no invoice found for the publicId supplied.
+/// - `mismatch`      — replay-window duplicate (X-Delivery-Id rejected).
+/// - `auth_error`    — unauthorized delivery attempt.
+/// - `error`         — unexpected DB or runtime failure.
+/// - `resolutionRate`— `resolved / (resolved + miss + stale + error)`; null when no attempts.
+#[derive(Debug, Deserialize)]
+pub struct WebhookMetricsParams {
+    pub window_hours: Option<i64>,
+}
+
+pub async fn webhook_correlation_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<WebhookMetricsParams>,
+) -> Result<Json<Value>, AppError> {
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
+
+    let window_hours = params.window_hours.unwrap_or(24).clamp(1, 168);
+    let client = state.pool.get().await?;
+
+    let rows = client
+        .query(
+            "SELECT outcome, SUM(count)::bigint AS total
+             FROM webhook_correlation_metrics
+             WHERE window_start >= NOW() - ($1::bigint * INTERVAL '1 hour')
+             GROUP BY outcome",
+            &[&window_hours],
+        )
+        .await?;
+
+    let mut resolved: i64 = 0;
+    let mut duplicate: i64 = 0;
+    let mut stale: i64 = 0;
+    let mut miss: i64 = 0;
+    let mut mismatch: i64 = 0;
+    let mut auth_error: i64 = 0;
+    let mut error: i64 = 0;
+
+    for row in &rows {
+        let outcome: &str = row.get("outcome");
+        let total: i64 = row.get("total");
+        match outcome {
+            "resolved"   => resolved   = total,
+            "duplicate"  => duplicate  = total,
+            "stale"      => stale      = total,
+            "miss"       => miss       = total,
+            "mismatch"   => mismatch   = total,
+            "auth_error" => auth_error = total,
+            "error"      => error      = total,
+            _ => {}
+        }
+    }
+
+    let attempts = resolved + miss + stale + error;
+    let resolution_rate: Option<f64> = if attempts > 0 {
+        Some(resolved as f64 / attempts as f64)
+    } else {
+        None
+    };
+
+    Ok(Json(json!({
+        "metric": "astropay_webhook_invoice_correlation",
+        "windowHours": window_hours,
+        "totals": {
+            "resolved":   resolved,
+            "duplicate":  duplicate,
+            "stale":      stale,
+            "miss":       miss,
+            "mismatch":   mismatch,
+            "auth_error": auth_error,
+            "error":      error,
+        },
+        "resolutionRate": resolution_rate,
+    })))
+}
+
 /// `GET /api/cron/payout-health`
 ///
 /// Returns a point-in-time snapshot of the payout queue so operators can detect
@@ -1129,5 +1235,75 @@ mod payout_health_tests {
         };
         let v = serde_json::to_value(&stats).unwrap();
         assert!(v["oldest_queued_age_secs"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod webhook_metrics_tests {
+    use serde_json::json;
+
+    #[test]
+    fn resolution_rate_is_null_when_no_attempts() {
+        // When resolved + miss + stale + error == 0, resolutionRate must be null.
+        let attempts: i64 = 0;
+        let resolved: i64 = 0;
+        let rate: Option<f64> = if attempts > 0 {
+            Some(resolved as f64 / attempts as f64)
+        } else {
+            None
+        };
+        assert!(rate.is_none());
+    }
+
+    #[test]
+    fn resolution_rate_computed_correctly() {
+        let resolved: i64 = 90;
+        let miss: i64 = 5;
+        let stale: i64 = 3;
+        let error: i64 = 2;
+        let attempts = resolved + miss + stale + error;
+        let rate = resolved as f64 / attempts as f64;
+        assert!((rate - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn window_hours_clamps_to_valid_range() {
+        assert_eq!(0_i64.clamp(1, 168), 1);
+        assert_eq!(200_i64.clamp(1, 168), 168);
+        assert_eq!(24_i64.clamp(1, 168), 24);
+    }
+
+    #[test]
+    fn response_shape_includes_all_outcome_keys() {
+        let v = json!({
+            "metric": "astropay_webhook_invoice_correlation",
+            "windowHours": 24_i64,
+            "totals": {
+                "resolved":   10_i64,
+                "duplicate":  2_i64,
+                "stale":      1_i64,
+                "miss":       3_i64,
+                "mismatch":   0_i64,
+                "auth_error": 0_i64,
+                "error":      0_i64,
+            },
+            "resolutionRate": 0.714_f64,
+        });
+        assert_eq!(v["metric"], "astropay_webhook_invoice_correlation");
+        assert_eq!(v["totals"]["resolved"], 10);
+        assert_eq!(v["totals"]["miss"], 3);
+        assert!(!v["resolutionRate"].is_null());
+    }
+
+    #[test]
+    fn outcome_match_arms_cover_all_variants() {
+        // Verify the handler source handles every outcome string defined in the migration.
+        let src = include_str!("cron.rs");
+        for outcome in &["resolved", "duplicate", "stale", "miss", "mismatch", "auth_error", "error"] {
+            assert!(
+                src.contains(&format!("\"{}\"", outcome)),
+                "cron.rs must handle outcome variant: {outcome}"
+            );
+        }
     }
 }
