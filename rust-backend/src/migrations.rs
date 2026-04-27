@@ -137,4 +137,40 @@ mod tests {
         assert!(sql.contains("schema_migrations"));
         assert!(sql.contains("DEFAULT 'unknown'"));
     }
+
+    /// Cross-runtime contract: the Next.js runner must use the same schema_migrations DDL
+    /// as the Rust runner. Both must agree on id, applied_at, and applied_by.
+    #[test]
+    fn nextjs_runner_schema_migrations_ddl_matches_rust() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/scripts/run-migrations.mjs");
+        let src = std::fs::read_to_string(path).expect("read run-migrations.mjs");
+        assert!(src.contains("CREATE TABLE IF NOT EXISTS schema_migrations"), "nextjs must create schema_migrations");
+        assert!(src.contains("id         TEXT PRIMARY KEY"), "nextjs id column must match rust DDL");
+        assert!(src.contains("applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"), "nextjs applied_at must match rust DDL");
+        assert!(src.contains("applied_by TEXT        NOT NULL DEFAULT 'unknown'"), "nextjs applied_by must match rust DDL");
+        assert!(src.contains("'nextjs'"), "nextjs runner must record applied_by = 'nextjs'");
+        assert!(src.contains("ADD COLUMN IF NOT EXISTS applied_by"), "nextjs must backfill applied_by idempotently");
+    }
+
+    /// migration_files must return an error when the directory does not exist.
+    #[test]
+    fn migration_files_errors_on_missing_directory() {
+        let result = migration_files(std::path::Path::new("/nonexistent/migrations"));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("migrations directory not found"));
+    }
+
+    /// migration_files must return an error when the directory contains no SQL files.
+    #[test]
+    fn migration_files_errors_on_empty_directory() {
+        let dir = std::env::temp_dir().join("astropay_test_empty_migrations");
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = migration_files(&dir);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("no SQL migrations found"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
