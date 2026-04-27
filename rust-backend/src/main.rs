@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/cron/payouts/:payout_id/claim", axum::routing::post(handlers::cron::claim_payout))
         .route("/api/cron/orphan-payments", get(handlers::cron::orphan_payments))
         .route("/api/cron/payout-health", get(handlers::cron::payout_health))
+        .route("/api/cron/alert-check", get(handlers::cron::alert_check))
         .route(
             "/api/webhooks/stellar",
             post(handlers::misc::stellar_webhook),

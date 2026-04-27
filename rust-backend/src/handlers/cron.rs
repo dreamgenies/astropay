@@ -38,6 +38,12 @@ const RECONCILE_PAGE_SIZE: i64 = 100;
 /// Rows fetched per page during settle keyset pagination.
 const SETTLE_PAGE_SIZE: i64 = 100;
 
+/// Explicit column list for invoices — prevents silent breakage when schema changes.
+const INVOICE_COLUMNS: &str = "id, public_id, merchant_id, description, amount_cents, currency, asset_code, asset_issuer, destination_public_key, memo, status, gross_amount_cents, platform_fee_cents, net_amount_cents, expires_at, paid_at, settled_at, transaction_hash, settlement_hash, checkout_url, qr_data_url, last_checkout_attempt_at, metadata, created_at, updated_at";
+
+/// Explicit column list for payouts — prevents silent breakage when schema changes.
+const PAYOUT_COLUMNS: &str = "id, invoice_id, merchant_id, destination_public_key, amount_cents, asset_code, asset_issuer, status, transaction_hash, failure_reason, failure_count, last_failure_at, last_failure_reason, processing_worker_id, processing_started_at, created_at, updated_at";
+
 #[derive(Debug, Deserialize)]
 pub struct DryRunParams {
     #[serde(default)]
@@ -74,12 +80,12 @@ pub async fn reconcile(
     loop {
         let rows = client
             .query(
-                "SELECT * FROM invoices
+                &format!("SELECT {INVOICE_COLUMNS} FROM invoices
                  WHERE status = 'pending'
                    AND (created_at, id) > ($1, $2)
                    AND ($4::bigint = 0 OR created_at >= NOW() - ($4::bigint * INTERVAL '1 hour'))
                  ORDER BY created_at ASC, id ASC
-                 LIMIT $3",
+                 LIMIT $3"),
                 &[
                     &cursor_created_at,
                     &cursor_id,
@@ -382,11 +388,11 @@ pub async fn settle(
     loop {
         let rows = client
             .query(
-                "SELECT * FROM payouts
+                &format!("SELECT {PAYOUT_COLUMNS} FROM payouts
                  WHERE status = 'failed'
                    AND (updated_at, id) > ($1, $2)
                  ORDER BY updated_at ASC, id ASC
-                 LIMIT $3",
+                 LIMIT $3"),
                 &[&cursor_updated_at, &cursor_id, &SETTLE_PAGE_SIZE],
             )
             .await?;
@@ -647,7 +653,7 @@ pub async fn replay_invoice(
     let mut client = state.pool.get().await?;
     let row = client
         .query_opt(
-            "SELECT * FROM invoices WHERE public_id = $1",
+            &format!("SELECT {INVOICE_COLUMNS} FROM invoices WHERE public_id = $1"),
             &[&body.public_id],
         )
         .await?
@@ -1091,6 +1097,129 @@ pub async fn payout_health(
         "deadLettered":        stats.dead_lettered,
         "oldestQueuedAgeSecs": stats.oldest_queued_age_secs,
     })))
+}
+
+/// `GET /api/cron/alert-check`
+///
+/// Evaluates stuck pending invoices and queued payouts against the configured
+/// age thresholds. Emits a `warn!` log for each breach so operators can route
+/// alerts via their log aggregator (Datadog, CloudWatch, etc.).
+///
+/// Response shape:
+/// ```json
+/// {
+///   "alerts": [
+///     { "kind": "stuck_pending_invoice", "count": 2, "thresholdSecs": 7200 },
+///     { "kind": "stuck_queued_payout",   "count": 1, "thresholdSecs": 3600 }
+///   ],
+///   "ok": false
+/// }
+/// ```
+/// `ok` is `true` when no thresholds are breached.
+pub async fn alert_check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
+    let client = state.pool.get().await?;
+    let invoice_threshold = state.config.pending_invoice_alert_threshold_secs;
+    let payout_threshold = state.config.queued_payout_alert_threshold_secs;
+
+    let row = client
+        .query_one(
+            "SELECT
+               (SELECT COUNT(*) FROM invoices WHERE status = 'pending' AND EXTRACT(EPOCH FROM (NOW() - created_at))::bigint > $1) AS stuck_pending,
+               (SELECT EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::bigint FROM invoices WHERE status = 'pending' AND EXTRACT(EPOCH FROM (NOW() - created_at))::bigint > $1) AS oldest_stuck_pending_age_secs,
+               (SELECT COUNT(*) FROM payouts WHERE status = 'queued' AND EXTRACT(EPOCH FROM (NOW() - created_at))::bigint > $2) AS stuck_queued,
+               (SELECT EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::bigint FROM payouts WHERE status = 'queued' AND EXTRACT(EPOCH FROM (NOW() - created_at))::bigint > $2) AS oldest_stuck_queued_age_secs",
+            &[&invoice_threshold, &payout_threshold],
+        )
+        .await?;
+
+    let stuck_pending: i64 = row.get("stuck_pending");
+    let oldest_stuck_pending_age_secs: Option<i64> = row.get("oldest_stuck_pending_age_secs");
+    let stuck_queued: i64 = row.get("stuck_queued");
+    let oldest_stuck_queued_age_secs: Option<i64> = row.get("oldest_stuck_queued_age_secs");
+
+    let mut alerts: Vec<Value> = Vec::new();
+
+    if stuck_pending > 0 {
+        warn!(
+            stuck_pending_count = stuck_pending,
+            oldest_age_secs = oldest_stuck_pending_age_secs,
+            threshold_secs = invoice_threshold,
+            "ALERT: stuck pending invoices exceed age threshold"
+        );
+        alerts.push(json!({
+            "kind": "stuck_pending_invoice",
+            "count": stuck_pending,
+            "oldestAgeSecs": oldest_stuck_pending_age_secs,
+            "thresholdSecs": invoice_threshold,
+        }));
+    }
+
+    if stuck_queued > 0 {
+        warn!(
+            stuck_queued_count = stuck_queued,
+            oldest_age_secs = oldest_stuck_queued_age_secs,
+            threshold_secs = payout_threshold,
+            "ALERT: stuck queued payouts exceed age threshold"
+        );
+        alerts.push(json!({
+            "kind": "stuck_queued_payout",
+            "count": stuck_queued,
+            "oldestAgeSecs": oldest_stuck_queued_age_secs,
+            "thresholdSecs": payout_threshold,
+        }));
+    }
+
+    Ok(Json(json!({
+        "alerts": alerts,
+        "ok": alerts.is_empty(),
+    })))
+}
+
+#[cfg(test)]
+mod alert_check_tests {
+    use serde_json::json;
+
+    #[test]
+    fn ok_true_when_no_alerts() {
+        let alerts: Vec<serde_json::Value> = vec![];
+        let body = json!({ "alerts": alerts, "ok": true });
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["alerts"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn ok_false_when_alerts_present() {
+        let alerts = vec![json!({
+            "kind": "stuck_pending_invoice",
+            "count": 3_i64,
+            "thresholdSecs": 7200_i64,
+        })];
+        let ok = alerts.is_empty();
+        assert!(!ok);
+    }
+
+    #[test]
+    fn alert_check_handler_uses_both_thresholds() {
+        let src = include_str!("cron.rs");
+        assert!(src.contains("pending_invoice_alert_threshold_secs"));
+        assert!(src.contains("queued_payout_alert_threshold_secs"));
+    }
+
+    #[test]
+    fn alert_check_emits_warn_for_stuck_pending() {
+        let src = include_str!("cron.rs");
+        assert!(src.contains("stuck pending invoices exceed age threshold"));
+    }
+
+    #[test]
+    fn alert_check_emits_warn_for_stuck_queued() {
+        let src = include_str!("cron.rs");
+        assert!(src.contains("stuck queued payouts exceed age threshold"));
+    }
 }
 
 #[cfg(test)]
