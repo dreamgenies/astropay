@@ -260,3 +260,94 @@ describe('checkPayoutTxConfirmed', () => {
   });
 });
 
+// ── AP-232: Horizon failure-injection ────────────────────────────────────────
+
+describe('findPaymentForInvoice — Horizon failure injection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('propagates 503 from payments call — does not return null or a mismatch', async () => {
+    mockPaymentsCall.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { response: { status: 503 } }));
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    await expect(findPaymentForInvoice(BASE_INVOICE)).rejects.toThrow('Service Unavailable');
+  });
+
+  it('propagates connection timeout from payments call', async () => {
+    mockPaymentsCall.mockRejectedValue(new Error('ECONNREFUSED'));
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    await expect(findPaymentForInvoice(BASE_INVOICE)).rejects.toThrow('ECONNREFUSED');
+  });
+
+  it('partial outage — payments succeeds but tx fetch returns 503 — error propagates', async () => {
+    // Payments page returns a matching record; the subsequent transaction fetch fails.
+    mockPaymentsCall.mockResolvedValue({
+      records: [
+        {
+          type: 'payment',
+          to: 'DEST_KEY',
+          asset_code: 'USDC',
+          asset_issuer: 'ISSUER_A',
+          amount: '10.00',
+          transaction_hash: 'tx_partial_outage',
+        },
+      ],
+    });
+    mockTransactionCall.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { response: { status: 503 } }));
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    // Must throw — must NOT silently return null or a memoMismatch.
+    await expect(findPaymentForInvoice(BASE_INVOICE)).rejects.toThrow('Service Unavailable');
+  });
+
+  it('partial outage — asset+amount match, tx fetch 503 — error propagates (not swallowed as memoMismatch)', async () => {
+    // Same as above but verifies the amountMismatch branch also propagates.
+    mockPaymentsCall.mockResolvedValue({
+      records: [
+        {
+          type: 'payment',
+          to: 'DEST_KEY',
+          asset_code: 'USDC',
+          asset_issuer: 'ISSUER_A',
+          amount: '99.00', // wrong amount → triggers tx fetch for memo check
+          transaction_hash: 'tx_partial_outage_2',
+        },
+      ],
+    });
+    mockTransactionCall.mockRejectedValue(Object.assign(new Error('Gateway Timeout'), { response: { status: 504 } }));
+    const { findPaymentForInvoice } = await import('@/lib/stellar');
+    await expect(findPaymentForInvoice(BASE_INVOICE)).rejects.toThrow('Gateway Timeout');
+  });
+});
+
+describe('checkPayoutTxConfirmed — Horizon failure injection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('propagates 503 — does not return "pending"', async () => {
+    // 503 is a server error, not a 404. It must NOT be treated as "not found yet".
+    mockTransactionCall.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { response: { status: 503 } }));
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    await expect(checkPayoutTxConfirmed('hash_abc')).rejects.toThrow('Service Unavailable');
+  });
+
+  it('propagates 502 bad gateway — does not return "pending"', async () => {
+    mockTransactionCall.mockRejectedValue(Object.assign(new Error('Bad Gateway'), { response: { status: 502 } }));
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    await expect(checkPayoutTxConfirmed('hash_abc')).rejects.toThrow('Bad Gateway');
+  });
+
+  it('propagates connection timeout — does not return "pending"', async () => {
+    mockTransactionCall.mockRejectedValue(new Error('ETIMEDOUT'));
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    await expect(checkPayoutTxConfirmed('hash_abc')).rejects.toThrow('ETIMEDOUT');
+  });
+
+  it('still returns "pending" for 404 — regression guard', async () => {
+    // 404 is the only status that maps to "pending"; all others must throw.
+    mockTransactionCall.mockRejectedValue({ response: { status: 404 } });
+    const { checkPayoutTxConfirmed } = await import('@/lib/stellar');
+    expect(await checkPayoutTxConfirmed('hash_abc')).toBe('pending');
+  });
+});
+
