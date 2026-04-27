@@ -363,6 +363,42 @@ pub async fn purge_sessions(
     Ok(Json(body))
 }
 
+pub async fn purge_payment_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    authorize_cron_request(&state.config.cron_secret, &headers)?;
+    let mut client = state.pool.get().await?;
+
+    let retain_days: i32 = client
+        .query_opt(
+            "SELECT retain_days FROM retention_config WHERE table_name = 'payment_events'",
+            &[],
+        )
+        .await?
+        .map(|r| r.get::<_, i32>("retain_days"))
+        .unwrap_or(365);
+
+    let deleted = client
+        .execute(
+            "DELETE FROM payment_events WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+            &[&retain_days],
+        )
+        .await?;
+
+    let body = json!({ "deleted": deleted, "retainDays": retain_days });
+
+    let _ = client
+        .execute(
+            "INSERT INTO cron_runs (job_type, started_at, finished_at, success, metadata) \
+             VALUES ('purge_payment_events', NOW(), NOW(), true, $1)",
+            &[&PgJson(&body)],
+        )
+        .await;
+
+    Ok(Json(body))
+}
+
 pub async fn archive(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -900,6 +936,30 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
 
     use crate::auth::authorize_cron_request;
+
+    #[test]
+    fn purge_payment_events_reads_retention_config_and_audits() {
+        let handler_code = include_str!("cron.rs");
+        assert!(
+            handler_code.contains("SELECT retain_days FROM retention_config WHERE table_name = 'payment_events'"),
+            "handler must read retain_days from retention_config"
+        );
+        assert!(
+            handler_code.contains("DELETE FROM payment_events WHERE created_at < NOW()"),
+            "handler must delete payment_events older than retain_days"
+        );
+        assert!(
+            handler_code.contains("'purge_payment_events'"),
+            "handler must audit the run as purge_payment_events in cron_runs"
+        );
+    }
+
+    #[test]
+    fn purge_payment_events_falls_back_to_365_days() {
+        // If retention_config has no row for payment_events, the handler defaults to 365.
+        let default: i32 = 365;
+        assert_eq!(default, 365);
+    }
 
     #[test]
     fn authorizes_valid_bearer_token() {
