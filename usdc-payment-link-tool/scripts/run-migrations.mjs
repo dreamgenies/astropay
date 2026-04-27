@@ -45,9 +45,13 @@ await client.connect();
 
 await client.query(`
   CREATE TABLE IF NOT EXISTS schema_migrations (
-    id TEXT PRIMARY KEY,
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id         TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    applied_by TEXT        NOT NULL DEFAULT 'unknown'
   )
+`);
+await client.query(`
+  ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS applied_by TEXT NOT NULL DEFAULT 'unknown'
 `);
 
 for (const file of files) {
@@ -57,7 +61,7 @@ for (const file of files) {
   await client.query('BEGIN');
   try {
     await client.query(sql);
-    await client.query('INSERT INTO schema_migrations (id) VALUES ($1)', [file]);
+    await client.query("INSERT INTO schema_migrations (id, applied_by) VALUES ($1, 'nextjs')", [file]);
     await client.query('COMMIT');
     console.log(`Applied ${file}`);
   } catch (error) {

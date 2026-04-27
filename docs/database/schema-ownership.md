@@ -41,13 +41,28 @@ Primary owner:
 
 Writers:
 
-- Next.js migration runner inserts applied migration IDs.
-- Rust migration runner inserts applied migration IDs.
+- Next.js migration runner inserts applied migration IDs with `applied_by = 'nextjs'`.
+- Rust migration runner inserts applied migration IDs with `applied_by = 'rust'`.
+
+Schema contract (both runtimes must agree):
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id         TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  applied_by TEXT        NOT NULL DEFAULT 'unknown'
+);
+```
+
+- `id` — the SQL filename (e.g. `001_init.sql`), used for idempotency checks.
+- `applied_at` — wall-clock time the migration was committed.
+- `applied_by` — which runtime applied the row: `'rust'`, `'nextjs'`, or `'unknown'` for rows predating migration `015_schema_migrations_applied_by.sql`.
 
 Notes:
 
 - Both runtimes must agree on lexical ordering and idempotency.
 - Ownership is intentionally shared because both runtimes can bootstrap the same database.
+- The `applied_by` column is the explicit contract added in AP-186; it lets operators audit which runner applied each migration without relying on log correlation.
 
 ### `merchants`
 
@@ -212,6 +227,7 @@ Both runtimes assume the same cookie name, JWT claim layout, and session lookup 
 
 - Confirmed against:
   `usdc-payment-link-tool/migrations/001_init.sql`
+  `usdc-payment-link-tool/migrations/015_schema_migrations_applied_by.sql`
   `usdc-payment-link-tool/scripts/run-migrations.mjs`
   `usdc-payment-link-tool/lib/data.ts`
   `usdc-payment-link-tool/lib/auth.ts`
