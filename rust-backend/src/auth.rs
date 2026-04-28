@@ -443,4 +443,84 @@ mod tests {
             s2.as_str(),
         ));
     }
+
+    #[test]
+    fn wallet_conflict_no_conflict_with_empty_existing() {
+        let s = g_key('x');
+        let t = g_key('y');
+        assert!(!wallet_keys_conflict_with_existing(&[], s.as_str(), t.as_str()));
+    }
+
+    // --- cookie token value and SameSite ---
+
+    #[test]
+    fn session_cookie_stores_token_value() {
+        let cookie = session_cookie(&insecure_config(), "my-jwt-token".to_string());
+        assert_eq!(cookie.value(), "my-jwt-token");
+    }
+
+    #[test]
+    fn session_cookie_same_site_is_lax() {
+        use axum_extra::extract::cookie::SameSite;
+        let cookie = session_cookie(&secure_config(), "tok".to_string());
+        assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+    }
+
+    #[test]
+    fn session_cookie_constant_name_matches_cookie() {
+        use super::SESSION_COOKIE;
+        let cookie = session_cookie(&insecure_config(), "t".to_string());
+        assert_eq!(cookie.name(), SESSION_COOKIE);
+    }
+
+    // --- id uniqueness ---
+
+    #[test]
+    fn generate_public_id_produces_unique_values() {
+        let a = generate_public_id();
+        let b = generate_public_id();
+        assert_ne!(a, b, "two consecutive public_ids must differ");
+    }
+
+    #[test]
+    fn generate_memo_produces_unique_values() {
+        let a = generate_memo();
+        let b = generate_memo();
+        assert_ne!(a, b, "two consecutive memos must differ");
+    }
+
+    // --- password edge cases ---
+
+    #[test]
+    fn verify_password_returns_false_for_malformed_hash() {
+        assert!(!verify_password("password", "not-a-valid-hash"));
+    }
+
+    #[test]
+    fn verify_password_returns_false_for_empty_hash() {
+        assert!(!verify_password("password", ""));
+    }
+
+    // --- cron auth edge cases ---
+
+    #[test]
+    fn authorize_cron_rejects_non_bearer_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic mysecret"),
+        );
+        assert!(authorize_cron_request("mysecret", &headers).is_err());
+    }
+
+    #[test]
+    fn authorize_cron_rejects_bearer_with_extra_whitespace() {
+        let mut headers = HeaderMap::new();
+        // "Bearer  secret" — double space; strip_prefix("Bearer ") leaves " secret"
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer  mysecret"),
+        );
+        assert!(authorize_cron_request("mysecret", &headers).is_err());
+    }
 }
