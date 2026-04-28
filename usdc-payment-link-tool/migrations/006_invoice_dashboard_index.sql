@@ -20,6 +20,11 @@
 -- The existing invoices_merchant_id_idx (single-column) is superseded by this
 -- index for the dashboard query but is kept because other queries (e.g. FK
 -- integrity checks) may still use it.
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS invoices_merchant_created_at_id_idx;
+--   The dashboard query will fall back to invoices_merchant_id_idx with a
+--   separate sort step. No data is affected.
 
 CREATE INDEX IF NOT EXISTS invoices_merchant_created_at_id_idx
     ON invoices (merchant_id, created_at DESC, id);

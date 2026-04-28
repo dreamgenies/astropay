@@ -16,6 +16,12 @@
 --   replay_of     — delivery_id of the original delivery this replays (nullable).
 --   received_at   — wall-clock arrival time.
 --   processed_at  — when processing completed (nullable).
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS webhook_deliveries_audit;
+--   This table is an audit/observability store. Dropping it loses delivery history
+--   but does not affect live webhook processing (replay detection uses
+--   webhook_deliveries from 011, not this table).
 
 CREATE TABLE IF NOT EXISTS webhook_deliveries_audit (
   id             UUID    PRIMARY KEY DEFAULT gen_random_uuid(),

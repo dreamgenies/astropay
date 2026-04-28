@@ -1,5 +1,13 @@
 -- migration 011_invoice_archival.sql
 -- Create archive tables to keep the main tables lean and performant.
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS archived_payment_events;
+--   DROP TABLE IF EXISTS archived_payouts;
+--   DROP TABLE IF EXISTS archived_invoices;
+--   All three tables are archive stores only; no live request path writes to them.
+--   Dropping them loses historical archived data but does not affect active invoices,
+--   payouts, or payment_events. Drop in dependency order (events → payouts → invoices).
 
 CREATE TABLE IF NOT EXISTS archived_invoices (
     id UUID PRIMARY KEY,

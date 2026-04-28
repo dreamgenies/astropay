@@ -8,6 +8,12 @@
 --   Next.js: generatePublicId()          → `inv_${crypto.randomBytes(8).toString('hex')}`
 --
 -- No existing rows need backfilling; the constraint is safe to apply immediately.
+--
+-- Rollback:
+--   ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_public_id_format;
+--   No data is affected; the constraint is a format guard only. Removing it allows
+--   public_id values with non-standard formats to be written. Ensure application
+--   generators still produce the correct format before rolling back.
 
 ALTER TABLE invoices
   ADD CONSTRAINT invoices_public_id_format

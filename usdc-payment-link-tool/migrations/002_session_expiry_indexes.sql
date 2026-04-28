@@ -6,6 +6,14 @@
 --    (expires_at, id) supports range scans and ordered batches without a separate sort on large tables.
 -- 3) Merchant-scoped deletes or audits use WHERE merchant_id = ? AND expires_at < ?. A composite (merchant_id, expires_at) replaces a
 --    standalone merchant_id index: the left prefix still accelerates WHERE merchant_id = ? alone.
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS sessions_expires_at_id_idx;
+--   DROP INDEX IF EXISTS sessions_merchant_expires_at_idx;
+--   CREATE INDEX sessions_expires_at_idx ON sessions (expires_at);
+--   CREATE INDEX sessions_merchant_id_idx ON sessions (merchant_id);
+--   This restores the single-column indexes from 001_init.sql. Expiry batch queries
+--   will lose the composite ordering benefit but remain functionally correct.
 
 DROP INDEX IF EXISTS sessions_expires_at_idx;
 DROP INDEX IF EXISTS sessions_merchant_id_idx;

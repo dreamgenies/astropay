@@ -16,6 +16,12 @@
 -- `error_detail` is nullable and populated only on failure.
 -- `payload` is JSONB for extensible per-attempt metadata (e.g. fee, sequence number).
 -- No GIN index is added speculatively; add one when a real WHERE/ORDER BY pattern lands.
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS checkout_attempts;
+--   No live request path depends on this table for correctness; it is an audit/
+--   observability store. Dropping it loses checkout attempt history but does not
+--   affect invoice state or payment processing.
 
 CREATE TABLE IF NOT EXISTS checkout_attempts (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -28,6 +28,11 @@
 --
 -- After adding an index: document the query in README and keep EXPLAIN plans for
 -- regression. Consider CONCURRENTLY for production-only follow-up migrations.
+--
+-- Rollback:
+--   This migration only sets a catalog COMMENT; there is nothing to drop.
+--   If the comment itself needs to be removed:
+--     COMMENT ON COLUMN invoices.metadata IS NULL;
 -- =============================================================================
 
 COMMENT ON COLUMN invoices.metadata IS

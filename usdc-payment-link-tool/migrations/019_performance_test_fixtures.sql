@@ -1,5 +1,16 @@
 -- Large-volume fixture dataset for performance tests
 -- Issue #219: Generates high-volume test data for invoice, payout, and event workloads
+--
+-- Rollback:
+--   SELECT cleanup_performance_test_data();
+--   DROP FUNCTION IF EXISTS cleanup_performance_test_data();
+--   DROP VIEW IF EXISTS performance_test_summary;
+--   The cleanup function (defined at the bottom of this migration) removes all
+--   test merchants, invoices, payouts, and payment_events inserted here.
+--   Run it before dropping the function and view.
+--   WARNING: this migration inserts data identified by email pattern
+--   'merchant%@test.com' and description pattern 'Performance test invoice%'.
+--   Do not use these patterns for real data or the cleanup function will delete it.
 
 -- Insert test merchants (10 merchants)
 INSERT INTO merchants (id, email, password_hash, business_name, stellar_public_key, settlement_public_key)

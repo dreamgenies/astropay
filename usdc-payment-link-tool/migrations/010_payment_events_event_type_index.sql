@@ -12,6 +12,11 @@
 -- The existing payment_events_invoice_id_idx (from 001_init.sql) is kept; queries
 -- that filter on both invoice_id AND event_type will use that index first (higher
 -- selectivity on invoice_id).
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS payment_events_event_type_idx;
+--   Queries filtering by event_type will fall back to sequential scans.
+--   No data is affected.
 
 CREATE INDEX IF NOT EXISTS payment_events_event_type_idx
     ON payment_events (event_type);

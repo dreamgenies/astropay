@@ -1,6 +1,13 @@
 -- Append-only audit of reconcile / settle cron invocations (HTTP handlers).
 -- metadata holds the response-shaped summary (counts, per-invoice or per-payout outcomes).
 -- error_detail is set when success is false (handler error, not implemented, or future partial-failure modes).
+--
+-- Rollback:
+--   DROP TABLE IF EXISTS cron_runs;
+--   No application data is lost; this is an audit/observability table only.
+--   Dependent migrations that extend the job_type CHECK constraint
+--   (007_cron_runs_purge_sessions.sql, 013_retention_policy.sql) must be rolled
+--   back first, or the DROP will fail due to constraint dependencies.
 
 CREATE TABLE cron_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

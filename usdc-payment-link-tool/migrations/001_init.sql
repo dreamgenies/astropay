@@ -1,3 +1,17 @@
+-- Rollback notes:
+--   This is the baseline migration. A full rollback means dropping all tables
+--   created here in reverse dependency order:
+--     DROP TABLE IF EXISTS payouts;
+--     DROP TABLE IF EXISTS payment_events;
+--     DROP TABLE IF EXISTS invoices;
+--     DROP TABLE IF EXISTS sessions;
+--     DROP TABLE IF EXISTS merchants;
+--   The pgcrypto extension can be left in place; removing it is rarely necessary
+--   and requires no active dependents:
+--     DROP EXTENSION IF EXISTS pgcrypto;
+--   WARNING: dropping these tables is destructive and irreversible in production.
+--   Only proceed after confirming all dependent migrations have been rolled back first.
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE merchants (

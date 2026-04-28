@@ -7,6 +7,11 @@
 --   SELECT * FROM invoices WHERE status = 'pending' ORDER BY expires_at ASC
 -- and expiry-check queries:
 --   SELECT * FROM invoices WHERE status = 'pending' AND expires_at <= NOW()
+--
+-- Rollback:
+--   DROP INDEX IF EXISTS invoices_pending_expires_at_idx;
+--   Reconcile and expiry-check queries will fall back to invoices_status_idx
+--   with a separate sort step. No data is affected.
 
 CREATE INDEX IF NOT EXISTS invoices_pending_expires_at_idx
   ON invoices (expires_at ASC)
