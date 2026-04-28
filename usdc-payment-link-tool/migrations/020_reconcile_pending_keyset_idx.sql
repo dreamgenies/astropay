@@ -1,0 +1,50 @@
+-- Issue AP-208: Composite partial index for reconcile keyset pagination.
+--
+-- Problem
+-- -------
+-- The reconcile cron query is:
+--
+--   SELECT * FROM invoices
+--   WHERE status = 'pending'
+--     AND (created_at, id) > ($1, $2)
+--     AND ($4::bigint = 0 OR created_at >= NOW() - ($4::bigint * INTERVAL '1 hour'))
+--   ORDER BY created_at ASC, id ASC
+--   LIMIT 100
+--
+-- With only the single-column `invoices_status_idx (status)` available, the
+-- planner must:
+--   1. Bitmap-scan `invoices_status_idx` to collect all pending row TIDs.
+--   2. Heap-fetch every pending row.
+--   3. Apply the keyset filter (created_at, id) > cursor in memory.
+--   4. Sort the survivors by (created_at ASC, id ASC).
+--   5. Return the first 100.
+--
+-- At scale (tens of thousands of pending invoices) this degrades to a full
+-- pending-set scan + sort on every cron tick.
+--
+-- Fix
+-- ---
+-- A partial composite index on (created_at ASC, id ASC) WHERE status = 'pending'
+-- lets the planner satisfy all three constraints in a single ordered index scan:
+--
+--   • The WHERE clause eliminates non-pending rows at the index level — the
+--     index only contains live pending rows, so it stays small as invoices
+--     transition to terminal states (paid, expired, settled, failed).
+--   • The leading column `created_at ASC` matches the ORDER BY direction, so
+--     no sort step is needed.
+--   • The trailing column `id ASC` is the tie-breaker in both the ORDER BY and
+--     the keyset predicate, enabling the planner to push the cursor comparison
+--     into the index scan directly.
+--   • The optional window filter `created_at >= NOW() - interval` is a range
+--     predicate on the leading column, which the index also satisfies.
+--
+-- Expected plan change (with 019 fixture data loaded):
+--   Before: Bitmap Heap Scan → Sort → Limit
+--   After:  Index Scan using invoices_pending_created_at_id_idx → Limit
+--
+-- The existing `invoices_status_idx` is kept; other queries that filter on
+-- non-pending statuses (e.g. dashboard counts, dead-letter paths) still use it.
+
+CREATE INDEX IF NOT EXISTS invoices_pending_created_at_id_idx
+  ON invoices (created_at ASC, id ASC)
+  WHERE status = 'pending';

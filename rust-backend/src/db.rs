@@ -472,6 +472,39 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_pending_keyset_index_migration_is_correct() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../usdc-payment-link-tool/migrations/020_reconcile_pending_keyset_idx.sql");
+        let sql = std::fs::read_to_string(path)
+            .expect("read 020_reconcile_pending_keyset_idx.sql");
+        assert!(
+            sql.contains("invoices_pending_created_at_id_idx"),
+            "must define the canonical index name"
+        );
+        assert!(
+            sql.contains("WHERE status = 'pending'"),
+            "must be a partial index scoped to pending rows only"
+        );
+        assert!(
+            sql.contains("created_at ASC"),
+            "must order by created_at ASC to match reconcile ORDER BY"
+        );
+        assert!(
+            sql.contains("id ASC"),
+            "must include id ASC as tie-breaker for keyset cursor"
+        );
+        assert!(
+            sql.contains("CREATE INDEX IF NOT EXISTS"),
+            "must be idempotent"
+        );
+        // Must not drop the existing status index — other queries still rely on it.
+        assert!(
+            !sql.contains("DROP INDEX"),
+            "must not drop invoices_status_idx"
+        );
+    }
+
+    #[test]
     fn ssl_mode_validation_rejects_invalid_modes() {
         assert!(validate_ssl_mode("invalid").is_err());
         assert!(validate_ssl_mode("random").is_err());
