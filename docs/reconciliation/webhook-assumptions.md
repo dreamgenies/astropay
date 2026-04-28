@@ -157,6 +157,53 @@ Webhook callers should send a unique `X-Delivery-Id` header per delivery attempt
 - Stale entries outside the window are purged lazily on each delivery.
 - The `webhook_deliveries` table can be queried to audit recent deliveries.
 
+## Webhook-to-invoice correlation metrics (AP-162)
+
+Every webhook delivery is counted by outcome in the `webhook_correlation_metrics` table (migration `020_webhook_correlation_metrics.sql`). Operators can query aggregated counts via:
+
+```
+GET /api/cron/webhook-metrics?window_hours=24
+Authorization: Bearer <CRON_SECRET>
+```
+
+Response shape:
+
+```json
+{
+  "metric": "astropay_webhook_invoice_correlation",
+  "windowHours": 24,
+  "totals": {
+    "resolved":   120,
+    "duplicate":  5,
+    "stale":      2,
+    "miss":       3,
+    "mismatch":   1,
+    "auth_error": 0,
+    "error":      0
+  },
+  "resolutionRate": 0.923
+}
+```
+
+Outcome definitions:
+
+| Outcome | Meaning |
+|---|---|
+| `resolved` | Invoice was `pending` → `paid` by this delivery |
+| `duplicate` | Invoice already `paid`/`settled`; no mutation |
+| `stale` | Invoice `expired` or `failed`; payment cannot be applied |
+| `miss` | No invoice found for the `publicId` supplied |
+| `mismatch` | Replay-window duplicate (`X-Delivery-Id` rejected) |
+| `auth_error` | Unauthorized delivery attempt |
+| `error` | Unexpected DB or runtime failure |
+
+`resolutionRate` = `resolved / (resolved + miss + stale + error)`. It is `null` when there are no attempts. Duplicates and mismatches are excluded from the denominator because they are noise, not failed resolution attempts.
+
+Alert guidance:
+- A sustained drop in `resolutionRate` below expected baseline indicates webhook callers are sending bad `publicId` values or invoices are expiring before delivery.
+- A spike in `auth_error` indicates a misconfigured or compromised caller.
+- A spike in `mismatch` indicates the caller is retrying within the replay window without backing off.
+
 ## Memo mismatch events (issue #172)
 
 When the cron reconcile path finds a payment where destination + asset + amount all match an invoice but the memo is wrong or missing, it inserts a `payment_events` row with `event_type = 'payment_memo_mismatch'` and payload:
