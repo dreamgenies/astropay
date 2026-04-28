@@ -171,6 +171,9 @@ mod tests {
         assert!(sql.contains("payment_events_created_at_idx"));
         assert!(sql.contains("ON payment_events (created_at ASC)"));
         assert!(sql.contains("CREATE INDEX IF NOT EXISTS"));
+    }
+
+    #[test]
     fn invoice_paid_at_not_before_created_at_migration_defines_check_constraint() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/017_invoice_paid_at_not_before_created_at.sql");
