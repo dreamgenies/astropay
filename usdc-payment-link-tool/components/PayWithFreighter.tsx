@@ -55,7 +55,12 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     async function poll() {
-      const res = await fetch(`/api/invoices/${invoiceId}/status`, { cache: 'no-store' });
+      const res = await fetch(`/api/invoices/${invoiceId}/status`, {
+        cache: 'no-store',
+        headers: {
+          'x-correlation-id': crypto.randomUUID()
+        }
+      });
       const data = (await readJsonBody(res)) as { status?: string };
       if (res.ok && data.status) {
         setStatus(data.status);
@@ -118,7 +123,10 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
       setTxStep('building');
       const buildRes = await fetch(`/api/invoices/${invoiceId}/checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-correlation-id': crypto.randomUUID()
+        },
         body: JSON.stringify({ mode: 'build-xdr', payer }),
       });
       const buildData = await readJsonBody(buildRes);
@@ -163,7 +171,10 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
       setTxStep('submitting');
       const submitRes = await fetch(`/api/invoices/${invoiceId}/checkout`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-correlation-id': crypto.randomUUID()
+        },
         body: JSON.stringify({ mode: 'submit-xdr', signedXdr }),
       });
       const submitData = await readJsonBody(submitRes);

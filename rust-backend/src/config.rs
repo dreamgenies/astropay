@@ -69,6 +69,10 @@ pub struct Config {
     pub log_format: LogFormat,
     /// Number of days to keep settled invoices in the main table before archiving. Defaults to 30.
     pub archive_retention_days: i64,
+    /// Maximum age (in seconds) for a pending invoice before an alert is emitted. Defaults to 7200 (2 hours).
+    pub pending_invoice_alert_threshold_secs: i64,
+    /// Maximum age (in seconds) for a queued payout before an alert is emitted. Defaults to 3600 (1 hour).
+    pub queued_payout_alert_threshold_secs: i64,
 }
 
 impl Config {
@@ -138,6 +142,14 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
+            pending_invoice_alert_threshold_secs: env::var("PENDING_INVOICE_ALERT_THRESHOLD_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7200),
+            queued_payout_alert_threshold_secs: env::var("QUEUED_PAYOUT_ALERT_THRESHOLD_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600),
         })
     }
 
@@ -178,6 +190,8 @@ mod tests {
             reconcile_scan_window_hours: 0,
             log_format: LogFormat::Human,
             archive_retention_days: 30,
+            pending_invoice_alert_threshold_secs: 7200,
+            queued_payout_alert_threshold_secs: 3600,
         }
     }
 

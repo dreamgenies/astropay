@@ -2,6 +2,7 @@ import { fail, ok } from '@/lib/http';
 import { assertSettlementConfig, env } from '@/lib/env';
 import { buildSettlementXdr, getServer } from '@/lib/stellar';
 import {
+  claimPayout,
   getInvoiceById,
   markPayoutFailed,
   markPayoutSubmitted,
@@ -35,6 +36,17 @@ export async function GET(request: Request) {
     processed = payouts.length;
 
     for (const payout of payouts) {
+      // Claim the payout to prevent concurrent processing
+      const claimed = await claimPayout(payout.id, 'settle-worker');
+      if (!claimed) {
+        results.push({
+          payoutId: payout.id,
+          action: 'skipped',
+          reason: 'Payout already being processed by another worker',
+        });
+        continue;
+      }
+
       if (!isValidSettlementPublicKey(payout.destination_public_key)) {
         const reason = 'Invalid destination stellar public key';
         if (!dryRun) await markPayoutFailed(payout.id, reason);

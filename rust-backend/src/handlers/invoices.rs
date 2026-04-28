@@ -13,6 +13,7 @@ use crate::{
     AppState,
     auth::{SESSION_COOKIE, current_merchant, generate_memo, generate_public_id},
     error::{AppError, AuthErrorCode},
+    handlers::cron::INVOICE_COLUMNS,
     models::{Invoice, InvoiceRequest, Merchant},
     stellar::build_checkout_url,
 };
@@ -32,7 +33,8 @@ pub async fn list_invoices(
                     asset_code, asset_issuer, destination_public_key, memo, status,
                     gross_amount_cents, platform_fee_cents, net_amount_cents,
                     expires_at, paid_at, settled_at, transaction_hash, settlement_hash,
-                    checkout_url, NULL::text AS qr_data_url, metadata, created_at, updated_at
+                    checkout_url, NULL::text AS qr_data_url, last_checkout_attempt_at,
+                    metadata, created_at, updated_at
              FROM invoices
              WHERE merchant_id = $1
              ORDER BY created_at DESC, id
@@ -68,11 +70,12 @@ pub async fn create_invoice(
 
     let row = client
         .query_one(
-            "INSERT INTO invoices (
+            &format!("INSERT INTO invoices (
                public_id, merchant_id, description, amount_cents, gross_amount_cents, platform_fee_cents,
                net_amount_cents, currency, asset_code, asset_issuer, destination_public_key, memo, expires_at, metadata
              ) VALUES ($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13)
-             RETURNING *",
+             RETURNING {INVOICE_COLUMNS}"),
+            // INVOICE_COLUMNS is imported from cron handler — explicit columns prevent silent breakage on schema changes.
             &[
                 &public_id,
                 &merchant.id,
@@ -104,7 +107,7 @@ pub async fn create_invoice(
 
     let updated = client
         .query_one(
-            "UPDATE invoices SET qr_data_url = $2, checkout_url = $3 WHERE id = $1 RETURNING *",
+            &format!("UPDATE invoices SET qr_data_url = $2, checkout_url = $3 WHERE id = $1 RETURNING {INVOICE_COLUMNS}"),
             &[&invoice.id, &qr_data_url, &checkout_url],
         )
         .await?;
@@ -121,7 +124,7 @@ pub async fn get_invoice(
     let merchant = require_merchant(&state, &client, &jar).await?;
     let row = client
         .query_opt(
-            "SELECT * FROM invoices WHERE merchant_id = $1 AND id = $2",
+            &format!("SELECT {INVOICE_COLUMNS} FROM invoices WHERE merchant_id = $1 AND id = $2"),
             &[&merchant.id, &id],
         )
         .await?;

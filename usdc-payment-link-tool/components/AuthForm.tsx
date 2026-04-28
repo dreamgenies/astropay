@@ -19,7 +19,10 @@ export function AuthForm({ mode }: Props) {
     const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-correlation-id': crypto.randomUUID()
+      },
       body: JSON.stringify(body),
     });
     const data = await res.json();

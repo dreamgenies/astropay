@@ -78,6 +78,7 @@ If you are evaluating the repo for production-readiness, read:
 - [usdc-payment-link-tool/DEPLOY_CHECKLIST.md](usdc-payment-link-tool/DEPLOY_CHECKLIST.md)
 - [rust-backend/README.md](rust-backend/README.md)
 - [docs/deployment/staged-release-rollback-playbook.md](docs/deployment/staged-release-rollback-playbook.md)
+- [docs/deployment/railway-deployment.md](docs/deployment/railway-deployment.md)
 
 The right reading is not “Rust solved everything.”
 
