@@ -168,9 +168,11 @@ mod tests {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_url: "http://localhost:3000".to_string(),
             public_app_url: "http://localhost:3000".to_string(),
-            database_url: Redacted::new("postgres://postgres:postgres@localhost:5432/astropay".to_string()),
+            database_url: Redacted::new(
+                "postgres://postgres:postgres@localhost:5432/astropay".to_string(),
+            ),
             pgssl: "disable".to_string(),
-            session_secret: Redacted::new("secret".to_string()),
+            session_secret: Redacted::new("raw-session-token".to_string()),
             horizon_url: "https://horizon-testnet.stellar.org".to_string(),
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
             stellar_network: "TESTNET".to_string(),
@@ -258,8 +260,14 @@ mod tests {
     fn config_debug_does_not_expose_session_secret() {
         let config = sample_config();
         let output = format!("{config:?}");
-        assert!(output.contains("[REDACTED]"), "Redacted fields must show [REDACTED]");
-        assert!(!output.contains("secret"), "session_secret value must not appear in Debug output");
+        assert!(
+            output.contains("[REDACTED]"),
+            "Redacted fields must show [REDACTED]"
+        );
+        assert!(
+            !output.contains("raw-session-token"),
+            "session_secret value must not appear in Debug output"
+        );
     }
 
     #[test]
@@ -268,13 +276,19 @@ mod tests {
         let output = format!("{config:?}");
         // "cron" is the test value for cron_secret — must not appear verbatim.
         // We check the field name is present but the value is redacted.
-        assert!(!output.contains("\"cron\""), "cron_secret value must not appear in Debug output");
+        assert!(
+            !output.contains("\"cron\""),
+            "cron_secret value must not appear in Debug output"
+        );
     }
 
     #[test]
     fn config_debug_does_not_expose_database_credentials() {
         let config = sample_config();
         let output = format!("{config:?}");
-        assert!(!output.contains("postgres:postgres"), "DB credentials must not appear in Debug output");
+        assert!(
+            !output.contains("postgres:postgres"),
+            "DB credentials must not appear in Debug output"
+        );
     }
 }

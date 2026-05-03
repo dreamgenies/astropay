@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 use std::fmt;
@@ -105,10 +105,17 @@ impl AppError {
 
     pub fn unauthorized_code(auth_code: AuthErrorCode) -> Self {
         let (code, message) = match auth_code {
-            AuthErrorCode::SessionRequired => (ErrorCode::SessionRequired, "Authentication required"),
-            AuthErrorCode::InvalidCredentials => (ErrorCode::InvalidCredentials, "Invalid email or password"),
+            AuthErrorCode::SessionRequired => {
+                (ErrorCode::SessionRequired, "Authentication required")
+            }
+            AuthErrorCode::InvalidCredentials => {
+                (ErrorCode::InvalidCredentials, "Invalid email or password")
+            }
             AuthErrorCode::SessionExpired => (ErrorCode::SessionExpired, "Session has expired"),
-            AuthErrorCode::RateLimited => (ErrorCode::RateLimited, "Too many attempts, please try again later"),
+            AuthErrorCode::RateLimited => (
+                ErrorCode::RateLimited,
+                "Too many attempts, please try again later",
+            ),
             AuthErrorCode::CronSecretMismatch => (ErrorCode::CronSecretMismatch, "Unauthorized"),
         };
         Self {
@@ -154,13 +161,13 @@ impl AppError {
     }
 
     /// Horizon is temporarily unavailable — callers should skip and retry later.
-    pub const HorizonUnavailable: Self = Self {
+    pub const HORIZON_UNAVAILABLE: Self = Self {
         code: ErrorCode::HorizonUnavailable,
         message: String::new(),
         status: StatusCode::BAD_GATEWAY,
     };
 
-    pub const Internal: Self = Self {
+    pub const INTERNAL: Self = Self {
         code: ErrorCode::Internal,
         message: String::new(),
         status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -253,7 +260,7 @@ mod tests {
 
     #[test]
     fn sentry_captures_system_errors() {
-        let errors = [AppError::Internal, AppError::not_implemented("x")];
+        let errors = [AppError::INTERNAL, AppError::not_implemented("x")];
         for e in &errors {
             assert_eq!(
                 e.classify(),
@@ -265,7 +272,10 @@ mod tests {
 
     #[test]
     fn sentry_captures_upstream_errors() {
-        assert_eq!(AppError::HorizonUnavailable.classify(), ErrorClass::Upstream);
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.classify(),
+            ErrorClass::Upstream
+        );
     }
 
     #[test]
@@ -294,6 +304,9 @@ mod tests {
 
     #[test]
     fn internal_error_has_500_status() {
-        assert_eq!(AppError::Internal.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            AppError::INTERNAL.status,
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

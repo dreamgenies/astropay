@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentMerchant } from '@/lib/auth';
 import { getMerchantInvoice } from '@/lib/data';
@@ -42,7 +43,9 @@ export default async function InvoiceDetailPage({ params }: { params: Promise<{ 
       </div>
       <div className="card stack">
         <div className="badge">QR</div>
-        {invoice.qr_data_url ? <img src={invoice.qr_data_url} alt="Invoice QR code" width={280} height={280} /> : null}
+        {invoice.qr_data_url ? (
+          <Image src={invoice.qr_data_url} alt="Invoice QR code" width={280} height={280} unoptimized />
+        ) : null}
       </div>
     </div>
   );

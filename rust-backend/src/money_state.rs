@@ -54,7 +54,7 @@ fn classify_invoice_paid_update(row_count: u64) -> Result<InvoicePaidUpdate, App
     match row_count {
         0 => Ok(InvoicePaidUpdate::AlreadyTransitioned),
         1 => Ok(InvoicePaidUpdate::Applied),
-        _ => Err(AppError::Internal),
+        _ => Err(AppError::INTERNAL),
     }
 }
 
@@ -195,7 +195,10 @@ mod reconcile_to_payout_tests {
         };
         assert!(matches!(
             outcome,
-            InvoicePaidOutcome::Applied { payout_queued: true, payout_skip_reason: None }
+            InvoicePaidOutcome::Applied {
+                payout_queued: true,
+                payout_skip_reason: None
+            }
         ));
     }
 
@@ -208,7 +211,10 @@ mod reconcile_to_payout_tests {
             payout_skip_reason: Some(PayoutSkipReason::InvalidSettlementPublicKey),
         };
         match outcome {
-            InvoicePaidOutcome::Applied { payout_queued, payout_skip_reason } => {
+            InvoicePaidOutcome::Applied {
+                payout_queued,
+                payout_skip_reason,
+            } => {
                 assert!(!payout_queued);
                 assert_eq!(
                     payout_skip_reason.unwrap().as_str(),
@@ -228,9 +234,15 @@ mod reconcile_to_payout_tests {
             payout_skip_reason: Some(PayoutSkipReason::PayoutAlreadyQueued),
         };
         match outcome {
-            InvoicePaidOutcome::Applied { payout_queued, payout_skip_reason } => {
+            InvoicePaidOutcome::Applied {
+                payout_queued,
+                payout_skip_reason,
+            } => {
                 assert!(!payout_queued);
-                assert_eq!(payout_skip_reason.unwrap().as_str(), "payout_already_queued");
+                assert_eq!(
+                    payout_skip_reason.unwrap().as_str(),
+                    "payout_already_queued"
+                );
             }
             _ => panic!("expected Applied"),
         }
@@ -252,7 +264,10 @@ mod reconcile_to_payout_tests {
     /// reason string so external callers cannot silently break on a rename.
     #[test]
     fn already_transitioned_reason_string_is_stable() {
-        assert_eq!(INVOICE_ALREADY_TRANSITIONED_REASON, "invoice_already_transitioned");
+        assert_eq!(
+            INVOICE_ALREADY_TRANSITIONED_REASON,
+            "invoice_already_transitioned"
+        );
     }
 
     /// Verify that the mark_invoice_paid_and_queue_payout source contains the

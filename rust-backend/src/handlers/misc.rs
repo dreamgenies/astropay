@@ -102,7 +102,7 @@ pub async fn stellar_webhook(
                     "transactionHash": payload.transaction_hash
                 })));
             }
-            Err(_) => return Err(AppError::Internal),
+            Err(_) => return Err(AppError::INTERNAL),
         };
 
         if updated == 0 {

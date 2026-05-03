@@ -145,12 +145,30 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/scripts/run-migrations.mjs");
         let src = std::fs::read_to_string(path).expect("read run-migrations.mjs");
-        assert!(src.contains("CREATE TABLE IF NOT EXISTS schema_migrations"), "nextjs must create schema_migrations");
-        assert!(src.contains("id         TEXT PRIMARY KEY"), "nextjs id column must match rust DDL");
-        assert!(src.contains("applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"), "nextjs applied_at must match rust DDL");
-        assert!(src.contains("applied_by TEXT        NOT NULL DEFAULT 'unknown'"), "nextjs applied_by must match rust DDL");
-        assert!(src.contains("'nextjs'"), "nextjs runner must record applied_by = 'nextjs'");
-        assert!(src.contains("ADD COLUMN IF NOT EXISTS applied_by"), "nextjs must backfill applied_by idempotently");
+        assert!(
+            src.contains("CREATE TABLE IF NOT EXISTS schema_migrations"),
+            "nextjs must create schema_migrations"
+        );
+        assert!(
+            src.contains("id         TEXT PRIMARY KEY"),
+            "nextjs id column must match rust DDL"
+        );
+        assert!(
+            src.contains("applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+            "nextjs applied_at must match rust DDL"
+        );
+        assert!(
+            src.contains("applied_by TEXT        NOT NULL DEFAULT 'unknown'"),
+            "nextjs applied_by must match rust DDL"
+        );
+        assert!(
+            src.contains("'nextjs'"),
+            "nextjs runner must record applied_by = 'nextjs'"
+        );
+        assert!(
+            src.contains("ADD COLUMN IF NOT EXISTS applied_by"),
+            "nextjs must backfill applied_by idempotently"
+        );
     }
 
     /// migration_files must return an error when the directory does not exist.

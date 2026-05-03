@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import { notFound } from 'next/navigation';
 import { PayWithFreighter } from '@/components/PayWithFreighter';
 import { CopyButton } from '@/components/CopyButton';
@@ -56,11 +57,19 @@ export default async function PayPage({ params }: { params: Promise<{ publicId: 
       <div className="stack">
         <div className="card stack">
           <div className="badge">QR checkout</div>
-          {invoice.qr_data_url ? <img src={invoice.qr_data_url} alt="Invoice QR code" className="qr-img" /> : null}
+          {invoice.qr_data_url ? (
+            <Image
+              src={invoice.qr_data_url}
+              alt="Invoice QR code"
+              width={280}
+              height={280}
+              className="qr-img"
+              unoptimized
+            />
+          ) : null}
         </div>
         <PayWithFreighter invoiceId={invoice.id} status={invoice.status} />
       </div>
     </div>
   );
 }
-

@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('paid invoice status after reconciliation e2e test', async ({ page, request }) => {
   // Mock Freighter wallet functions
   await page.addInitScript(() => {
-    window.stellar = {
+    (window as unknown as { stellar: unknown }).stellar = {
       freighter: {
         isConnected: async () => ({ isConnected: true }),
         requestAccess: async () => ({ address: 'GBTESTADDRESS1234567890123456789012345678901234567890' }),

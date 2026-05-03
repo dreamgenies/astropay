@@ -264,7 +264,9 @@ mod tests {
         // current_merchant returns Ok(None) when token is None — me maps that to 401.
         let src = include_str!("auth.rs");
         assert!(
-            src.contains("None => Err(AppError::unauthorized_code(AuthErrorCode::SessionRequired))"),
+            src.contains(
+                "None => Err(AppError::unauthorized_code(AuthErrorCode::SessionRequired))"
+            ),
             "me must return 401 SessionRequired when no session cookie is present"
         );
     }

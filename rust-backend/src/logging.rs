@@ -1,7 +1,7 @@
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::config::LogFormat;
+use rust_backend::config::LogFormat;
 
 pub fn init_tracing(log_format: LogFormat) {
     let registry = tracing_subscriber::registry().with(

@@ -18,22 +18,22 @@ async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
             .get(url)
             .send()
             .await
-            .map_err(|_| AppError::Internal)?;
+            .map_err(|_| AppError::INTERNAL)?;
         if resp.status() != StatusCode::TOO_MANY_REQUESTS {
-            return resp.error_for_status().map_err(|_| AppError::Internal);
+            return resp.error_for_status().map_err(|_| AppError::INTERNAL);
         }
         if attempt == MAX_RETRIES {
             warn!(
                 url,
                 "horizon rate-limited after {} retries, giving up", MAX_RETRIES
             );
-            return Err(AppError::Internal);
+            return Err(AppError::INTERNAL);
         }
         warn!(url, attempt, delay_ms, "horizon 429 — backing off");
         sleep(Duration::from_millis(delay_ms)).await;
         delay_ms *= 2;
     }
-    Err(AppError::Internal)
+    Err(AppError::INTERNAL)
 }
 
 /// Maximum bytes for a Stellar text memo (protocol limit).
@@ -117,11 +117,11 @@ pub async fn confirm_transaction(
         .get(url)
         .send()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|_| AppError::INTERNAL)?;
     if resp.status() == 404 {
         return Ok(TransactionStatus::NotFound);
     }
-    let tx: serde_json::Value = resp.json().await.map_err(|_| AppError::Internal)?;
+    let tx: serde_json::Value = resp.json().await.map_err(|_| AppError::INTERNAL)?;
     if tx.get("successful").and_then(|v| v.as_bool()) == Some(true) {
         Ok(TransactionStatus::Success)
     } else {
@@ -205,7 +205,7 @@ pub fn payment_matches_invoice(record: &serde_json::Value, memo: &str, invoice: 
 /// gross amount (formatted to two decimal places), and transaction memo.
 ///
 /// Returns `None` if no matching payment is found in that window.
-/// Returns `Err(AppError::Internal)` if the Horizon HTTP call or JSON parse fails.
+/// Returns `Err(AppError::INTERNAL)` if the Horizon HTTP call or JSON parse fails.
 ///
 /// **Limit**: only the 50 most recent operations are inspected. Payments older than that window
 /// will not be detected. Use the replay endpoint to rescan a specific invoice manually.
@@ -223,7 +223,7 @@ pub async fn find_payment_for_invoice(
         .await?
         .json::<PaymentsPage>()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|_| AppError::INTERNAL)?;
 
     let expected_amount = invoice_amount_to_asset(invoice);
 
@@ -262,7 +262,7 @@ pub async fn find_payment_for_invoice(
                 .await?
                 .json::<HorizonTransaction>()
                 .await
-                .map_err(|_| AppError::Internal)?;
+                .map_err(|_| AppError::INTERNAL)?;
 
             if tx.memo == invoice.memo {
                 return Ok(PaymentScanResult::AmountMismatch(AmountMismatch {
@@ -287,7 +287,7 @@ pub async fn find_payment_for_invoice(
             .await?
             .json::<HorizonTransaction>()
             .await
-            .map_err(|_| AppError::Internal)?;
+            .map_err(|_| AppError::INTERNAL)?;
 
         if payment_matches_invoice(&record.raw, &tx.memo, invoice) {
             return Ok(PaymentScanResult::Match(PaymentMatch {
@@ -337,12 +337,12 @@ pub async fn fetch_treasury_payments(
         .get(url)
         .send()
         .await
-        .map_err(|_| AppError::Internal)?
+        .map_err(|_| AppError::INTERNAL)?
         .error_for_status()
-        .map_err(|_| AppError::Internal)?
+        .map_err(|_| AppError::INTERNAL)?
         .json::<PaymentsPage>()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|_| AppError::INTERNAL)?;
 
     let payments = page
         .embedded
@@ -443,6 +443,8 @@ mod tests {
             reconcile_scan_window_hours: 0,
             log_format: LogFormat::Human,
             archive_retention_days: 30,
+            pending_invoice_alert_threshold_secs: 7200,
+            queued_payout_alert_threshold_secs: 3600,
         }
     }
 
@@ -585,26 +587,35 @@ mod tests {
     fn horizon_unavailable_error_code_is_distinct_from_internal() {
         use crate::error::{AppError, ErrorCode};
         assert_ne!(
-            AppError::HorizonUnavailable.code as u8,
-            AppError::Internal.code as u8,
+            AppError::HORIZON_UNAVAILABLE.code as u8,
+            AppError::INTERNAL.code as u8,
             "HorizonUnavailable and Internal must be distinct error codes"
         );
-        assert_eq!(AppError::HorizonUnavailable.code, ErrorCode::HorizonUnavailable);
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.code,
+            ErrorCode::HorizonUnavailable
+        );
     }
 
     /// HorizonUnavailable must be classified as Upstream so Sentry captures it.
     #[test]
     fn horizon_unavailable_classifies_as_upstream() {
         use crate::error::{AppError, ErrorClass};
-        assert_eq!(AppError::HorizonUnavailable.classify(), ErrorClass::Upstream);
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.classify(),
+            ErrorClass::Upstream
+        );
     }
 
     /// HorizonUnavailable must return HTTP 502 so load-balancers can detect it.
     #[test]
     fn horizon_unavailable_has_502_status() {
-        use axum::http::StatusCode;
         use crate::error::AppError;
-        assert_eq!(AppError::HorizonUnavailable.status, StatusCode::BAD_GATEWAY);
+        use axum::http::StatusCode;
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.status,
+            StatusCode::BAD_GATEWAY
+        );
     }
 
     /// Reconcile must skip (not mark paid/expired) when Horizon is unavailable.
@@ -635,7 +646,7 @@ mod tests {
         use crate::error::{AppError, ErrorCode};
         // Simulate what find_payment_for_invoice returns when horizon_get fails on the
         // payments URL. The error must be HorizonUnavailable so reconcile can match it.
-        let err = AppError::HorizonUnavailable;
+        let err = AppError::HORIZON_UNAVAILABLE;
         assert_eq!(err.code, ErrorCode::HorizonUnavailable);
         // Reconcile matches: Err(AppError { code: HorizonUnavailable, .. }) => skip
         // Verify the match pattern exists in the handler source.
@@ -647,7 +658,7 @@ mod tests {
     }
 
     /// Partial outage: payments page succeeds but transaction fetch fails.
-    /// In this case find_payment_for_invoice returns Err(AppError::Internal),
+    /// In this case find_payment_for_invoice returns Err(AppError::INTERNAL),
     /// which reconcile must NOT swallow — it must propagate as a hard error.
     #[test]
     fn reconcile_propagates_non_horizon_errors() {
@@ -671,7 +682,7 @@ mod tests {
     #[test]
     fn horizon_get_returns_internal_after_max_429_retries() {
         use crate::error::{AppError, ErrorCode};
-        // The horizon_get source returns Err(AppError::Internal) after MAX_RETRIES.
+        // The horizon_get source returns Err(AppError::INTERNAL) after MAX_RETRIES.
         let src = include_str!("stellar.rs");
         assert!(
             src.contains("horizon rate-limited after {} retries, giving up"),
@@ -679,19 +690,19 @@ mod tests {
         );
         // Confirm the returned error is Internal, not HorizonUnavailable.
         // (Rate-limit exhaustion is a different failure mode from a 503.)
-        let err = AppError::Internal;
+        let err = AppError::INTERNAL;
         assert_eq!(err.code, ErrorCode::Internal);
     }
 
-    /// Timeout / connection-refused from reqwest surfaces as AppError::Internal
+    /// Timeout / connection-refused from reqwest surfaces as AppError::INTERNAL
     /// (the map_err in horizon_get maps send() failures to Internal).
     #[test]
     fn horizon_get_maps_send_failure_to_internal() {
         let src = include_str!("stellar.rs");
-        // The .send().await.map_err(|_| AppError::Internal) line must be present.
+        // The .send().await.map_err(|_| AppError::INTERNAL) line must be present.
         assert!(
-            src.contains("map_err(|_| AppError::Internal)"),
-            "horizon_get must map send() errors to AppError::Internal"
+            src.contains("map_err(|_| AppError::INTERNAL)"),
+            "horizon_get must map send() errors to AppError::INTERNAL"
         );
     }
 
@@ -768,5 +779,6 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].transaction_hash, "hash_usdc");
         assert_eq!(filtered[0].from, "GSENDER1");
+        assert_eq!(filtered[0].amount, "20.00");
     }
 }
