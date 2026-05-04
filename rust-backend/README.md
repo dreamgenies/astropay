@@ -315,16 +315,16 @@ Key points for contributors:
 
 ## `last_checkout_attempt_at` column (migration 005)
 
-Migration `005_invoice_last_checkout_attempt_at.sql` adds a nullable `TIMESTAMPTZ` column to `invoices`. It records when a buyer last loaded the checkout page for that invoice.
+Migration `005_invoice_last_checkout_attempt_at.sql` adds a nullable `TIMESTAMPTZ` column to `invoices`. The checkout handler updates it after build-XDR or submit-XDR attempts.
 
 - `NULL` means no checkout attempt has been observed (invoices created before this migration, or invoices never visited). Treat `NULL` and a past timestamp identically in application logic.
 - The column is intentionally nullable — no `NOT NULL` constraint — so the migration is safe to apply against existing rows without a backfill.
-- No index is created. Add one in a follow-up migration once a real `WHERE last_checkout_attempt_at > $1` query lands in application code.
+- No standalone index is created on `invoices.last_checkout_attempt_at`. Detailed attempt history is indexed in `checkout_attempts` by migration `021_checkout_attempts.sql`.
 - The Rust `Invoice` struct and `from_row` mapping include the field. The reconcile and settle cron jobs do not write to it; only the checkout handler should update it.
 
 **Apply:** `cargo run --bin migrate`
 
-**Verify:** `cargo test checkout_attempt` (guards that the column is nullable, is `TIMESTAMPTZ`, and that no speculative index was added).
+**Verify:** `cargo test checkout_attempt` and `npm test -- checkoutAttempts` (guard the migration shape and checkout-attempt audit writes).
 
 ## Payout-queue health (`GET /api/cron/payout-health`)
 

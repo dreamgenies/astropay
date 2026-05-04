@@ -6,14 +6,15 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use http::Request;
 use rust_backend::{
     AppState, config::Config, db::create_pool, handlers, login_rate_limit::LoginRateLimiter,
 };
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::trace::{
-    DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer,
-};
-use tracing::Level;
+use tower_http::trace::{DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tracing::{Level, info_span};
+
+const CORRELATION_ID_HEADER: &str = "x-correlation-id";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -100,20 +101,29 @@ async fn main() -> anyhow::Result<()> {
         )
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(
-                    DefaultMakeSpan::new()
-                        .include_headers(true)
-                        .level(Level::INFO),
-                )
+                .make_span_with(|request: &Request<_>| {
+                    let correlation_id = request
+                        .headers()
+                        .get(CORRELATION_ID_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("");
+                    info_span!(
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        version = ?request.version(),
+                        correlation_id = %correlation_id,
+                    )
+                })
                 .on_request(DefaultOnRequest::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         )
         .layer(PropagateRequestIdLayer::new(
-            http::header::HeaderName::from_static("x-correlation-id"),
+            http::header::HeaderName::from_static(CORRELATION_ID_HEADER),
         ))
         .layer(SetRequestIdLayer::new(
-            http::header::HeaderName::from_static("x-correlation-id"),
+            http::header::HeaderName::from_static(CORRELATION_ID_HEADER),
             MakeRequestUuid,
         ))
         .with_state(state);
@@ -141,5 +151,27 @@ fn load_env_files() {
         "../usdc-payment-link-tool/.env",
     ] {
         let _ = dotenvy::from_filename(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn request_tracing_does_not_log_raw_headers() {
+        let src = include_str!("main.rs");
+        let forbidden = ["include_headers", "(true)"].concat();
+        assert!(
+            !src.contains(&forbidden),
+            "request tracing must not log Authorization or Cookie headers"
+        );
+    }
+
+    #[test]
+    fn request_tracing_uses_correlation_id_header() {
+        assert_eq!(super::CORRELATION_ID_HEADER, "x-correlation-id");
+        let src = include_str!("main.rs");
+        assert!(src.contains("SetRequestIdLayer"));
+        assert!(src.contains("PropagateRequestIdLayer"));
+        assert!(src.contains("correlation_id"));
     }
 }

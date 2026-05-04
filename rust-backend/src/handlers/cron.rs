@@ -193,29 +193,6 @@ pub async fn reconcile(
                         continue;
                     }
                     let transaction = client.transaction().await?;
-                    let updated = transaction
-                        .execute(
-                            "UPDATE invoices
-                             SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-                             WHERE id = $1 AND status = 'pending'",
-                            &[&invoice.id, &payment.hash],
-                        )
-                        .await;
-                    let updated = match updated {
-                        Ok(n) => n,
-                        Err(ref e)
-                            if e.code()
-                                == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
-                        {
-                            results.push(json!({ "publicId": invoice.public_id, "action": "already_processed", "txHash": payment.hash }));
-                            continue;
-                        }
-                        Err(_) => return Err(AppError::INTERNAL),
-                    };
-                    if updated == 0 {
-                        results.push(json!({ "publicId": invoice.public_id, "action": "skipped", "txHash": payment.hash }));
-                        continue;
-                    }
                     let outcome = mark_invoice_paid_and_queue_payout(
                         &transaction,
                         invoice.id,
@@ -750,20 +727,6 @@ pub async fn replay_invoice(
             }
 
             let transaction = client.transaction().await?;
-            transaction
-                .execute(
-                    "UPDATE invoices
-                     SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-                     WHERE id = $1 AND status = 'pending'",
-                    &[&invoice.id, &payment.hash],
-                )
-                .await?;
-            transaction
-                .execute(
-                    "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                    &[&invoice.id, &"payment_detected", &payment.payment],
-                )
-                .await?;
             let outcome = mark_invoice_paid_and_queue_payout(
                 &transaction,
                 invoice.id,
@@ -966,15 +929,6 @@ mod tests {
     fn default_settle_batch_size_is_fifty() {
         assert_eq!(super::DEFAULT_SETTLE_BATCH_SIZE, 50);
     }
-    //
-    // The reconcile handler guards against duplicate processing with two layers:
-    //   1. Pre-check: SELECT on transaction_hash before opening a transaction.
-    //   2. Race guard: UNIQUE_VIOLATION on the UPDATE is caught and treated as
-    //      already_processed rather than an error.
-    //
-    // These tests verify the action strings produced by each branch so that
-    // callers can distinguish a fresh payment from a duplicate delivery.
-
     #[test]
     fn memo_mismatch_action_string_is_stable() {
         // Emitted when destination + asset + amount match but memo is wrong.
@@ -984,18 +938,25 @@ mod tests {
     }
 
     #[test]
-    fn already_processed_action_string_is_stable() {
-        // The JSON action value must not change; external callers may branch on it.
-        let action = "already_processed";
-        assert_eq!(action, "already_processed");
-    }
-
-    #[test]
     fn skipped_action_string_is_stable() {
         // Emitted when the UPDATE matched 0 rows (status changed between read
         // and write — e.g. webhook beat the cron to it).
         let action = "skipped";
         assert_eq!(action, "skipped");
+    }
+
+    #[test]
+    fn reconcile_delegates_paid_transition_to_money_state_helper() {
+        let handler_code = include_str!("cron.rs");
+        let forbidden_sql = ["SET status = ", "'paid'"].concat();
+        assert!(
+            !handler_code.contains(&forbidden_sql),
+            "cron handlers must not pre-update paid status before mark_invoice_paid_and_queue_payout"
+        );
+        assert!(
+            handler_code.contains("mark_invoice_paid_and_queue_payout"),
+            "cron handlers must use the shared paid-transition helper"
+        );
     }
 
     #[test]

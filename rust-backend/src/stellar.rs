@@ -9,6 +9,14 @@ use crate::{config::Config, error::AppError, models::Invoice};
 
 const BACKOFF_BASE_MS: u64 = 500;
 const MAX_RETRIES: u32 = 4;
+const HORIZON_REQUEST_TIMEOUT_SECS: u64 = 15;
+
+fn horizon_client() -> Result<Client, AppError> {
+    Client::builder()
+        .timeout(Duration::from_secs(HORIZON_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|_| AppError::INTERNAL)
+}
 
 /// GET `url` with exponential backoff on HTTP 429. Logs each throttle event.
 async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
@@ -18,16 +26,18 @@ async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
             .get(url)
             .send()
             .await
-            .map_err(|_| AppError::INTERNAL)?;
+            .map_err(|_| AppError::HORIZON_UNAVAILABLE)?;
         if resp.status() != StatusCode::TOO_MANY_REQUESTS {
-            return resp.error_for_status().map_err(|_| AppError::INTERNAL);
+            return resp
+                .error_for_status()
+                .map_err(|_| AppError::HORIZON_UNAVAILABLE);
         }
         if attempt == MAX_RETRIES {
             warn!(
                 url,
                 "horizon rate-limited after {} retries, giving up", MAX_RETRIES
             );
-            return Err(AppError::INTERNAL);
+            return Err(AppError::HORIZON_UNAVAILABLE);
         }
         warn!(url, attempt, delay_ms, "horizon 429 — backing off");
         sleep(Duration::from_millis(delay_ms)).await;
@@ -113,14 +123,17 @@ pub async fn confirm_transaction(
         config.horizon_url.trim_end_matches('/'),
         tx_hash
     );
-    let resp = Client::new()
+    let resp = horizon_client()?
         .get(url)
         .send()
         .await
-        .map_err(|_| AppError::INTERNAL)?;
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?;
     if resp.status() == 404 {
         return Ok(TransactionStatus::NotFound);
     }
+    let resp = resp
+        .error_for_status()
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?;
     let tx: serde_json::Value = resp.json().await.map_err(|_| AppError::INTERNAL)?;
     if tx.get("successful").and_then(|v| v.as_bool()) == Some(true) {
         Ok(TransactionStatus::Success)
@@ -218,7 +231,7 @@ pub async fn find_payment_for_invoice(
         config.horizon_url.trim_end_matches('/'),
         invoice.destination_public_key
     );
-    let client = Client::new();
+    let client = horizon_client()?;
     let page = horizon_get(&client, &payments_url)
         .await?
         .json::<PaymentsPage>()
@@ -333,13 +346,13 @@ pub async fn fetch_treasury_payments(
         config.platform_treasury_public_key,
         limit,
     );
-    let page = Client::new()
+    let page = horizon_client()?
         .get(url)
         .send()
         .await
-        .map_err(|_| AppError::INTERNAL)?
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?
         .error_for_status()
-        .map_err(|_| AppError::INTERNAL)?
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?
         .json::<PaymentsPage>()
         .await
         .map_err(|_| AppError::INTERNAL)?;
@@ -677,32 +690,38 @@ mod tests {
         assert_eq!(super::MAX_RETRIES, 4);
     }
 
-    /// After MAX_RETRIES exhausted on 429, the error must be Internal (rate-limit
-    /// exhaustion is an operational failure, not a transient Horizon outage).
     #[test]
-    fn horizon_get_returns_internal_after_max_429_retries() {
+    fn horizon_client_has_bounded_request_timeout() {
+        assert_eq!(super::HORIZON_REQUEST_TIMEOUT_SECS, 15);
+        let src = include_str!("stellar.rs");
+        assert!(
+            src.contains(".timeout(Duration::from_secs(HORIZON_REQUEST_TIMEOUT_SECS))"),
+            "Horizon client must use a bounded request timeout"
+        );
+    }
+
+    /// After MAX_RETRIES exhausted on 429, reconcile should classify Horizon as
+    /// unavailable so one throttled scan does not fail the whole batch.
+    #[test]
+    fn horizon_get_returns_horizon_unavailable_after_max_429_retries() {
         use crate::error::{AppError, ErrorCode};
-        // The horizon_get source returns Err(AppError::INTERNAL) after MAX_RETRIES.
         let src = include_str!("stellar.rs");
         assert!(
             src.contains("horizon rate-limited after {} retries, giving up"),
-            "horizon_get must log exhaustion before returning Internal"
+            "horizon_get must log exhaustion before returning HorizonUnavailable"
         );
-        // Confirm the returned error is Internal, not HorizonUnavailable.
-        // (Rate-limit exhaustion is a different failure mode from a 503.)
-        let err = AppError::INTERNAL;
-        assert_eq!(err.code, ErrorCode::Internal);
+        let err = AppError::HORIZON_UNAVAILABLE;
+        assert_eq!(err.code, ErrorCode::HorizonUnavailable);
     }
 
-    /// Timeout / connection-refused from reqwest surfaces as AppError::INTERNAL
-    /// (the map_err in horizon_get maps send() failures to Internal).
+    /// Timeout / connection-refused from reqwest surfaces as HorizonUnavailable
+    /// so reconciliation can skip the invoice and continue the batch.
     #[test]
-    fn horizon_get_maps_send_failure_to_internal() {
+    fn horizon_get_maps_send_failure_to_horizon_unavailable() {
         let src = include_str!("stellar.rs");
-        // The .send().await.map_err(|_| AppError::INTERNAL) line must be present.
         assert!(
-            src.contains("map_err(|_| AppError::INTERNAL)"),
-            "horizon_get must map send() errors to AppError::INTERNAL"
+            src.contains("map_err(|_| AppError::HORIZON_UNAVAILABLE)"),
+            "horizon_get must map send() errors to AppError::HORIZON_UNAVAILABLE"
         );
     }
 
