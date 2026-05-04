@@ -30,7 +30,7 @@ pub enum InvoiceStatus {
 }
 
 impl InvoiceStatus {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_status(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "paid" => Some(Self::Paid),
@@ -62,7 +62,7 @@ pub enum PayoutStatus {
 }
 
 impl PayoutStatus {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_status(s: &str) -> Option<Self> {
         match s {
             "queued" => Some(Self::Queued),
             "submitted" => Some(Self::Submitted),
@@ -97,7 +97,7 @@ pub fn validate_settle_transition(
         return Err(SettleError::MissingTxHash);
     }
 
-    match InvoiceStatus::from_str(invoice_status) {
+    match InvoiceStatus::parse_status(invoice_status) {
         Some(InvoiceStatus::Paid) => {}
         _ => {
             return Err(SettleError::InvoiceNotPaid {
@@ -106,7 +106,7 @@ pub fn validate_settle_transition(
         }
     }
 
-    match PayoutStatus::from_str(payout_status) {
+    match PayoutStatus::parse_status(payout_status) {
         Some(PayoutStatus::Settled)
         | Some(PayoutStatus::Failed)
         | Some(PayoutStatus::DeadLettered) => {
@@ -149,11 +149,11 @@ pub const SETTLE_MUTATIONS: SettleMutations = SettleMutations {
 /// threshold — callers should escalate rather than schedule a retry.
 pub fn backoff_seconds(failure_count: i32) -> Option<i64> {
     match failure_count {
-        1 => Some(5 * 60),          // 5 minutes
-        2 => Some(15 * 60),         // 15 minutes
-        3 => Some(60 * 60),         // 1 hour
-        4 => Some(4 * 60 * 60),     // 4 hours
-        _ => None,                  // dead-letter threshold reached
+        1 => Some(5 * 60),      // 5 minutes
+        2 => Some(15 * 60),     // 15 minutes
+        3 => Some(60 * 60),     // 1 hour
+        4 => Some(4 * 60 * 60), // 4 hours
+        _ => None,              // dead-letter threshold reached
     }
 }
 
@@ -178,15 +178,15 @@ mod tests {
     #[test]
     fn invoice_status_round_trips_all_variants() {
         for s in ["pending", "paid", "settled", "expired", "failed"] {
-            let status = InvoiceStatus::from_str(s).unwrap();
+            let status = InvoiceStatus::parse_status(s).unwrap();
             assert_eq!(status.as_str(), s);
         }
     }
 
     #[test]
     fn invoice_status_rejects_unknown_string() {
-        assert!(InvoiceStatus::from_str("processing").is_none());
-        assert!(InvoiceStatus::from_str("").is_none());
+        assert!(InvoiceStatus::parse_status("processing").is_none());
+        assert!(InvoiceStatus::parse_status("").is_none());
     }
 
     // ── PayoutStatus ─────────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn payout_status_round_trips_all_variants() {
         for s in ["queued", "submitted", "settled", "failed", "dead_lettered"] {
-            assert!(PayoutStatus::from_str(s).is_some());
+            assert!(PayoutStatus::parse_status(s).is_some());
         }
     }
 
@@ -378,7 +378,10 @@ mod tests {
     fn backoff_windows_are_strictly_increasing() {
         let windows: Vec<i64> = (1..=4).map(|c| backoff_seconds(c).unwrap()).collect();
         for pair in windows.windows(2) {
-            assert!(pair[1] > pair[0], "backoff windows must be strictly increasing");
+            assert!(
+                pair[1] > pair[0],
+                "backoff windows must be strictly increasing"
+            );
         }
     }
 }

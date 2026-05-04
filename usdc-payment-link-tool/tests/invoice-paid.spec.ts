@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('paid invoice status after reconciliation e2e test', async ({ page, request }) => {
   // Mock Freighter wallet functions
   await page.addInitScript(() => {
-    window.stellar = {
+    (window as unknown as { stellar: unknown }).stellar = {
       freighter: {
         isConnected: async () => ({ isConnected: true }),
         requestAccess: async () => ({ address: 'GBTESTADDRESS1234567890123456789012345678901234567890' }),
@@ -73,12 +73,12 @@ test('paid invoice status after reconciliation e2e test', async ({ page, request
   // Call reconcile API (assuming horizon is mocked to return the payment)
   const reconcileResponse = await request.get('/api/cron/reconcile', {
     headers: {
-      'x-cron-secret': process.env.CRON_SECRET || 'cron'
+      authorization: `Bearer ${process.env.CRON_SECRET || 'cron'}`,
     }
   });
   expect(reconcileResponse.ok()).toBe(true);
   const reconcileData = await reconcileResponse.json();
-  expect(reconcileData).toContainEqual(expect.objectContaining({ action: 'paid', txHash: 'mocked_tx_hash_123' }));
+  expect(reconcileData.results).toContainEqual(expect.objectContaining({ action: 'paid', txHash: 'mocked_tx_hash_123' }));
 
   // Check invoice status
   const statusResponse = await request.get(`/api/invoices/${invoiceId}/status`);

@@ -66,7 +66,7 @@ fn hash_password_with_params(password: &str, params: Params) -> Result<String, A
     Scrypt
         .hash_password_customized(password.as_bytes(), None, None, params, &salt)
         .map(|hash| hash.to_string())
-        .map_err(|_| AppError::Internal)
+        .map_err(|_| AppError::INTERNAL)
 }
 
 pub fn verify_password(password: &str, stored_hash: &str) -> bool {
@@ -227,7 +227,7 @@ mod tests {
         authorize_cron_request, generate_memo, generate_public_id, hash_password_with_params,
         session_cookie, verify_password, wallet_keys_conflict_with_existing,
     };
-    use crate::config::{Config, LogFormat};
+    use crate::config::Config;
     use crate::redact::Redacted;
 
     fn secure_config() -> Config {
@@ -257,6 +257,8 @@ mod tests {
             reconcile_scan_window_hours: 0,
             log_format: crate::config::LogFormat::Json,
             archive_retention_days: 30,
+            pending_invoice_alert_threshold_secs: 7200,
+            queued_payout_alert_threshold_secs: 3600,
         }
     }
 
@@ -287,6 +289,8 @@ mod tests {
             reconcile_scan_window_hours: 0,
             log_format: crate::config::LogFormat::Human,
             archive_retention_days: 30,
+            pending_invoice_alert_threshold_secs: 7200,
+            queued_payout_alert_threshold_secs: 3600,
         }
     }
 
@@ -367,7 +371,9 @@ mod tests {
             assert_eq!(id.len(), 20, "must be 20 chars: {id}");
             let hex_part = &id[4..];
             assert!(
-                hex_part.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                hex_part
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
                 "body must be lowercase hex: {id}"
             );
         }
@@ -398,7 +404,10 @@ mod tests {
     #[test]
     fn authorize_cron_rejects_when_secret_not_configured() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer anything"));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer anything"),
+        );
         assert!(authorize_cron_request("", &headers).is_err());
     }
 
@@ -448,7 +457,11 @@ mod tests {
     fn wallet_conflict_no_conflict_with_empty_existing() {
         let s = g_key('x');
         let t = g_key('y');
-        assert!(!wallet_keys_conflict_with_existing(&[], s.as_str(), t.as_str()));
+        assert!(!wallet_keys_conflict_with_existing(
+            &[],
+            s.as_str(),
+            t.as_str()
+        ));
     }
 
     // --- cookie token value and SameSite ---

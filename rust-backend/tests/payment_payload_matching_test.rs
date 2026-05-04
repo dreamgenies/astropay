@@ -149,7 +149,13 @@ fn rejects_when_both_to_and_account_are_absent() {
 fn rejects_destination_with_extra_whitespace() {
     let invoice = make_invoice();
     let padded = format!(" {DESTINATION_ACCOUNT}");
-    let record = credit_payment(Some(&padded), None, ASSET_CODE, ASSET_ISSUER, INVOICE_AMOUNT);
+    let record = credit_payment(
+        Some(&padded),
+        None,
+        ASSET_CODE,
+        ASSET_ISSUER,
+        INVOICE_AMOUNT,
+    );
     assert!(!payment_matches_invoice(&record, INVOICE_MEMO, &invoice));
 }
 
@@ -395,11 +401,7 @@ fn rejects_memo_with_wrong_prefix() {
         INVOICE_AMOUNT,
     );
     // Settlement memo prefix instead of buyer memo prefix.
-    assert!(!payment_matches_invoice(
-        &record,
-        "s:inv_test01",
-        &invoice
-    ));
+    assert!(!payment_matches_invoice(&record, "s:inv_test01", &invoice));
 }
 
 #[test]

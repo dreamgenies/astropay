@@ -66,9 +66,9 @@ export async function POST(request: Request) {
       payout = await markInvoicePaid({ invoiceId: invoice.id, transactionHash, payload: body });
       // AP-162: invoice was pending and is now paid — this is a successful resolution.
       await recordWebhookOutcome('resolved');
-    } catch {
+    } catch (error) {
       await recordWebhookOutcome('error');
-      throw;
+      throw error;
     }
   } else if (invoice.status === 'expired' || invoice.status === 'failed') {
     // AP-162: invoice is in a terminal non-paid state; payment cannot be applied.

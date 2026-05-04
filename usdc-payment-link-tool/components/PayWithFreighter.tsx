@@ -46,6 +46,7 @@ export function PayWithFreighter({ invoiceId, status: initialStatus }: Props) {
   const [failure, setFailure] = useState<FailureState | null>(null);
   const [loading, setLoading] = useState(false);
   const [txStep, setTxStep] = useState<TxStep>('idle');
+  const inFlight = useRef(false);
 
   const failureView = useMemo(
     () => (failure ? resolveCheckoutFailure(failure.message, failure.stage) : null),

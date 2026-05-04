@@ -1,8 +1,22 @@
 use std::{env, net::SocketAddr};
 
 use chrono::Duration;
+use thiserror::Error;
 
 use crate::redact::Redacted;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("environment configuration error: {0}")]
+    MissingEnv(#[from] env::VarError),
+    #[error("invalid bind address {host}:{port}: {source}")]
+    InvalidBindAddress {
+        host: String,
+        port: String,
+        #[source]
+        source: std::net::AddrParseError,
+    },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogFormat {
@@ -76,12 +90,10 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, env::VarError> {
+    pub fn from_env() -> Result<Self, ConfigError> {
         let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
         let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let bind_addr = format!("{host}:{port}")
-            .parse()
-            .expect("valid bind address");
+        let bind_addr = parse_bind_addr(&host, &port)?;
         let app_url = env::var("APP_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
         Ok(Self {
             bind_addr,
@@ -158,9 +170,19 @@ impl Config {
     }
 }
 
+fn parse_bind_addr(host: &str, port: &str) -> Result<SocketAddr, ConfigError> {
+    format!("{host}:{port}")
+        .parse()
+        .map_err(|source| ConfigError::InvalidBindAddress {
+            host: host.to_string(),
+            port: port.to_string(),
+            source,
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Config, LogFormat};
+    use super::{Config, ConfigError, LogFormat, parse_bind_addr};
     use crate::redact::Redacted;
 
     fn sample_config() -> Config {
@@ -168,9 +190,11 @@ mod tests {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_url: "http://localhost:3000".to_string(),
             public_app_url: "http://localhost:3000".to_string(),
-            database_url: Redacted::new("postgres://postgres:postgres@localhost:5432/astropay".to_string()),
+            database_url: Redacted::new(
+                "postgres://postgres:postgres@localhost:5432/astropay".to_string(),
+            ),
             pgssl: "disable".to_string(),
-            session_secret: Redacted::new("secret".to_string()),
+            session_secret: Redacted::new("raw-session-token".to_string()),
             horizon_url: "https://horizon-testnet.stellar.org".to_string(),
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
             stellar_network: "TESTNET".to_string(),
@@ -252,14 +276,33 @@ mod tests {
         assert_eq!(LogFormat::from_env("pretty"), LogFormat::Human);
     }
 
+    #[test]
+    fn parse_bind_addr_returns_typed_error_for_invalid_port() {
+        let error = parse_bind_addr("127.0.0.1", "not-a-port").unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidBindAddress {
+                host,
+                port,
+                ..
+            } if host == "127.0.0.1" && port == "not-a-port"
+        ));
+    }
+
     // ── Log-redaction: Config must not leak secrets via Debug ────────────────
 
     #[test]
     fn config_debug_does_not_expose_session_secret() {
         let config = sample_config();
         let output = format!("{config:?}");
-        assert!(output.contains("[REDACTED]"), "Redacted fields must show [REDACTED]");
-        assert!(!output.contains("secret"), "session_secret value must not appear in Debug output");
+        assert!(
+            output.contains("[REDACTED]"),
+            "Redacted fields must show [REDACTED]"
+        );
+        assert!(
+            !output.contains("raw-session-token"),
+            "session_secret value must not appear in Debug output"
+        );
     }
 
     #[test]
@@ -268,13 +311,19 @@ mod tests {
         let output = format!("{config:?}");
         // "cron" is the test value for cron_secret — must not appear verbatim.
         // We check the field name is present but the value is redacted.
-        assert!(!output.contains("\"cron\""), "cron_secret value must not appear in Debug output");
+        assert!(
+            !output.contains("\"cron\""),
+            "cron_secret value must not appear in Debug output"
+        );
     }
 
     #[test]
     fn config_debug_does_not_expose_database_credentials() {
         let config = sample_config();
         let output = format!("{config:?}");
-        assert!(!output.contains("postgres:postgres"), "DB credentials must not appear in Debug output");
+        assert!(
+            !output.contains("postgres:postgres"),
+            "DB credentials must not appear in Debug output"
+        );
     }
 }

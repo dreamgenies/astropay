@@ -26,7 +26,7 @@ use crate::{
 
 pub(crate) const PAYOUT_DEAD_LETTER_THRESHOLD: i32 = 5;
 
-/// Default number of queued payouts processed per settle run.
+#[cfg(test)]
 const DEFAULT_SETTLE_BATCH_SIZE: i64 = 50;
 
 /// Default number of recent treasury payments to scan for orphans.
@@ -39,7 +39,7 @@ const RECONCILE_PAGE_SIZE: i64 = 100;
 const SETTLE_PAGE_SIZE: i64 = 100;
 
 /// Explicit column list for invoices — prevents silent breakage when schema changes.
-const INVOICE_COLUMNS: &str = "id, public_id, merchant_id, description, amount_cents, currency, asset_code, asset_issuer, destination_public_key, memo, status, gross_amount_cents, platform_fee_cents, net_amount_cents, expires_at, paid_at, settled_at, transaction_hash, settlement_hash, checkout_url, qr_data_url, last_checkout_attempt_at, metadata, created_at, updated_at";
+pub(crate) const INVOICE_COLUMNS: &str = "id, public_id, merchant_id, description, amount_cents, currency, asset_code, asset_issuer, destination_public_key, memo, status, gross_amount_cents, platform_fee_cents, net_amount_cents, expires_at, paid_at, settled_at, transaction_hash, settlement_hash, checkout_url, qr_data_url, last_checkout_attempt_at, metadata, created_at, updated_at";
 
 /// Explicit column list for payouts — prevents silent breakage when schema changes.
 const PAYOUT_COLUMNS: &str = "id, invoice_id, merchant_id, destination_public_key, amount_cents, asset_code, asset_issuer, status, transaction_hash, failure_reason, failure_count, last_failure_at, last_failure_reason, processing_worker_id, processing_started_at, created_at, updated_at";
@@ -80,12 +80,14 @@ pub async fn reconcile(
     loop {
         let rows = client
             .query(
-                &format!("SELECT {INVOICE_COLUMNS} FROM invoices
+                &format!(
+                    "SELECT {INVOICE_COLUMNS} FROM invoices
                  WHERE status = 'pending'
                    AND (created_at, id) > ($1, $2)
                    AND ($4::bigint = 0 OR created_at >= NOW() - ($4::bigint * INTERVAL '1 hour'))
                  ORDER BY created_at ASC, id ASC
-                 LIMIT $3"),
+                 LIMIT $3"
+                ),
                 &[
                     &cursor_created_at,
                     &cursor_id,
@@ -191,29 +193,6 @@ pub async fn reconcile(
                         continue;
                     }
                     let transaction = client.transaction().await?;
-                    let updated = transaction
-                        .execute(
-                            "UPDATE invoices
-                             SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-                             WHERE id = $1 AND status = 'pending'",
-                            &[&invoice.id, &payment.hash],
-                        )
-                        .await;
-                    let updated = match updated {
-                        Ok(n) => n,
-                        Err(ref e)
-                            if e.code()
-                                == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) =>
-                        {
-                            results.push(json!({ "publicId": invoice.public_id, "action": "already_processed", "txHash": payment.hash }));
-                            continue;
-                        }
-                        Err(_) => return Err(AppError::Internal),
-                    };
-                    if updated == 0 {
-                        results.push(json!({ "publicId": invoice.public_id, "action": "skipped", "txHash": payment.hash }));
-                        continue;
-                    }
                     let outcome = mark_invoice_paid_and_queue_payout(
                         &transaction,
                         invoice.id,
@@ -288,8 +267,8 @@ pub async fn purge_payment_events(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    authorize_cron_request(&state.config.cron_secret, &headers)?;
-    let mut client = state.pool.get().await?;
+    authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
+    let client = state.pool.get().await?;
 
     let retain_days: i32 = client
         .query_opt(
@@ -424,11 +403,13 @@ pub async fn settle(
     loop {
         let rows = client
             .query(
-                &format!("SELECT {PAYOUT_COLUMNS} FROM payouts
+                &format!(
+                    "SELECT {PAYOUT_COLUMNS} FROM payouts
                  WHERE status = 'failed'
                    AND (updated_at, id) > ($1, $2)
                  ORDER BY updated_at ASC, id ASC
-                 LIMIT $3"),
+                 LIMIT $3"
+                ),
                 &[&cursor_updated_at, &cursor_id, &SETTLE_PAGE_SIZE],
             )
             .await?;
@@ -561,7 +542,7 @@ pub async fn replay_payout(
     let failure_count: i32 = row.get("failure_count");
 
     if status != "dead_lettered" && status != "failed" {
-        return Err(AppError::bad_request(&format!(
+        return Err(AppError::bad_request(format!(
             "payout {payout_id} has status '{status}'; only dead_lettered or failed payouts can be replayed"
         )));
     }
@@ -746,20 +727,6 @@ pub async fn replay_invoice(
             }
 
             let transaction = client.transaction().await?;
-            transaction
-                .execute(
-                    "UPDATE invoices
-                     SET status = 'paid', paid_at = NOW(), transaction_hash = $2, updated_at = NOW()
-                     WHERE id = $1 AND status = 'pending'",
-                    &[&invoice.id, &payment.hash],
-                )
-                .await?;
-            transaction
-                .execute(
-                    "INSERT INTO payment_events (invoice_id, event_type, payload) VALUES ($1, $2, $3)",
-                    &[&invoice.id, &"payment_detected", &payment.payment],
-                )
-                .await?;
             let outcome = mark_invoice_paid_and_queue_payout(
                 &transaction,
                 invoice.id,
@@ -802,7 +769,9 @@ mod tests {
     fn purge_payment_events_reads_retention_config_and_audits() {
         let handler_code = include_str!("cron.rs");
         assert!(
-            handler_code.contains("SELECT retain_days FROM retention_config WHERE table_name = 'payment_events'"),
+            handler_code.contains(
+                "SELECT retain_days FROM retention_config WHERE table_name = 'payment_events'"
+            ),
             "handler must read retain_days from retention_config"
         );
         assert!(
@@ -960,15 +929,6 @@ mod tests {
     fn default_settle_batch_size_is_fifty() {
         assert_eq!(super::DEFAULT_SETTLE_BATCH_SIZE, 50);
     }
-    //
-    // The reconcile handler guards against duplicate processing with two layers:
-    //   1. Pre-check: SELECT on transaction_hash before opening a transaction.
-    //   2. Race guard: UNIQUE_VIOLATION on the UPDATE is caught and treated as
-    //      already_processed rather than an error.
-    //
-    // These tests verify the action strings produced by each branch so that
-    // callers can distinguish a fresh payment from a duplicate delivery.
-
     #[test]
     fn memo_mismatch_action_string_is_stable() {
         // Emitted when destination + asset + amount match but memo is wrong.
@@ -978,18 +938,25 @@ mod tests {
     }
 
     #[test]
-    fn already_processed_action_string_is_stable() {
-        // The JSON action value must not change; external callers may branch on it.
-        let action = "already_processed";
-        assert_eq!(action, "already_processed");
-    }
-
-    #[test]
     fn skipped_action_string_is_stable() {
         // Emitted when the UPDATE matched 0 rows (status changed between read
         // and write — e.g. webhook beat the cron to it).
         let action = "skipped";
         assert_eq!(action, "skipped");
+    }
+
+    #[test]
+    fn reconcile_delegates_paid_transition_to_money_state_helper() {
+        let handler_code = include_str!("cron.rs");
+        let forbidden_sql = ["SET status = ", "'paid'"].concat();
+        assert!(
+            !handler_code.contains(&forbidden_sql),
+            "cron handlers must not pre-update paid status before mark_invoice_paid_and_queue_payout"
+        );
+        assert!(
+            handler_code.contains("mark_invoice_paid_and_queue_payout"),
+            "cron handlers must use the shared paid-transition helper"
+        );
     }
 
     #[test]
@@ -1177,13 +1144,13 @@ pub async fn webhook_correlation_metrics(
         let outcome: &str = row.get("outcome");
         let total: i64 = row.get("total");
         match outcome {
-            "resolved"   => resolved   = total,
-            "duplicate"  => duplicate  = total,
-            "stale"      => stale      = total,
-            "miss"       => miss       = total,
-            "mismatch"   => mismatch   = total,
+            "resolved" => resolved = total,
+            "duplicate" => duplicate = total,
+            "stale" => stale = total,
+            "miss" => miss = total,
+            "mismatch" => mismatch = total,
             "auth_error" => auth_error = total,
-            "error"      => error      = total,
+            "error" => error = total,
             _ => {}
         }
     }
@@ -1209,6 +1176,7 @@ pub async fn webhook_correlation_metrics(
         },
         "resolutionRate": resolution_rate,
     })))
+}
 /// Claims a payout for processing to prevent concurrent settlement.
 ///
 /// Returns `true` if the payout was successfully claimed, `false` if it was already claimed or not in queued status.
@@ -1224,7 +1192,9 @@ pub async fn claim_payout(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
     authorize_cron_request(state.config.cron_secret.inner(), &headers)?;
-    let worker_id = body["workerId"].as_str().ok_or_else(|| AppError::bad_request("workerId required"))?;
+    let worker_id = body["workerId"]
+        .as_str()
+        .ok_or_else(|| AppError::bad_request("workerId required"))?;
     let client = state.pool.get().await?;
     let claimed = crate::db::claim_payout_for_processing(&client, payout_id, worker_id).await?;
     Ok(Json(json!({ "claimed": claimed })))
@@ -1508,7 +1478,15 @@ mod webhook_metrics_tests {
     fn outcome_match_arms_cover_all_variants() {
         // Verify the handler source handles every outcome string defined in the migration.
         let src = include_str!("cron.rs");
-        for outcome in &["resolved", "duplicate", "stale", "miss", "mismatch", "auth_error", "error"] {
+        for outcome in &[
+            "resolved",
+            "duplicate",
+            "stale",
+            "miss",
+            "mismatch",
+            "auth_error",
+            "error",
+        ] {
             assert!(
                 src.contains(&format!("\"{}\"", outcome)),
                 "cron.rs must handle outcome variant: {outcome}"

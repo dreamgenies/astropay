@@ -1,27 +1,27 @@
-/// Log-redaction utilities for sensitive configuration values.
-///
-/// # Problem
-/// Rust's `{:?}` (Debug) and `{}` (Display) formatting will happily print any
-/// value that derives or implements those traits. A `Config` struct that derives
-/// `Debug` would expose `session_secret`, `platform_treasury_secret_key`,
-/// `cron_secret`, and the `database_url` (which embeds credentials) in every
-/// log line that formats the config.
-///
-/// # Solution
-/// `Redacted<T>` is a newtype wrapper that:
-/// - Stores the inner value normally so it can be accessed via `.inner()`.
-/// - Implements `Debug` and `Display` as the literal string `[REDACTED]`.
-/// - Implements `Clone` when `T: Clone`.
-///
-/// Use `redact_log_value` for one-off string sanitisation (e.g. stripping a
-/// bearer token from an ad-hoc log message).
-///
-/// # Patterns that are NOT covered
-/// - Structured tracing fields passed as `field = value` — callers must not
-///   pass raw secret strings as field values. Use `field = "[REDACTED]"` or
-///   omit the field entirely.
-/// - Sentry breadcrumbs / event data — see `sentry::configure_scope` if you
-///   need to scrub data before it leaves the process.
+//! Log-redaction utilities for sensitive configuration values.
+//!
+//! # Problem
+//! Rust's `{:?}` (Debug) and `{}` (Display) formatting will happily print any
+//! value that derives or implements those traits. A `Config` struct that derives
+//! `Debug` would expose `session_secret`, `platform_treasury_secret_key`,
+//! `cron_secret`, and the `database_url` (which embeds credentials) in every
+//! log line that formats the config.
+//!
+//! # Solution
+//! `Redacted<T>` is a newtype wrapper that:
+//! - Stores the inner value normally so it can be accessed via `.inner()`.
+//! - Implements `Debug` and `Display` as the literal string `[REDACTED]`.
+//! - Implements `Clone` when `T: Clone`.
+//!
+//! Use `redact_log_value` for one-off string sanitisation (e.g. stripping a
+//! bearer token from an ad-hoc log message).
+//!
+//! # Patterns that are NOT covered
+//! - Structured tracing fields passed as `field = value` — callers must not
+//!   pass raw secret strings as field values. Use `field = "[REDACTED]"` or
+//!   omit the field entirely.
+//! - Sentry breadcrumbs / event data — see `sentry::configure_scope` if you
+//!   need to scrub data before it leaves the process.
 
 use std::fmt;
 
@@ -197,6 +197,8 @@ mod tests {
             name: "app".to_string(),
             secret: Redacted::new("s3cr3t".to_string()),
         };
+        assert_eq!(cfg.name, "app");
+        assert_eq!(cfg.secret.inner(), "s3cr3t");
         let output = format!("{cfg:?}");
         assert!(output.contains("name: \"app\""), "name should be visible");
         assert!(output.contains("[REDACTED]"), "secret must be redacted");

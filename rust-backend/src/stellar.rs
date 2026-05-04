@@ -9,6 +9,14 @@ use crate::{config::Config, error::AppError, models::Invoice};
 
 const BACKOFF_BASE_MS: u64 = 500;
 const MAX_RETRIES: u32 = 4;
+const HORIZON_REQUEST_TIMEOUT_SECS: u64 = 15;
+
+fn horizon_client() -> Result<Client, AppError> {
+    Client::builder()
+        .timeout(Duration::from_secs(HORIZON_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|_| AppError::INTERNAL)
+}
 
 /// GET `url` with exponential backoff on HTTP 429. Logs each throttle event.
 async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
@@ -18,22 +26,24 @@ async fn horizon_get(client: &Client, url: &str) -> Result<Response, AppError> {
             .get(url)
             .send()
             .await
-            .map_err(|_| AppError::Internal)?;
+            .map_err(|_| AppError::HORIZON_UNAVAILABLE)?;
         if resp.status() != StatusCode::TOO_MANY_REQUESTS {
-            return resp.error_for_status().map_err(|_| AppError::Internal);
+            return resp
+                .error_for_status()
+                .map_err(|_| AppError::HORIZON_UNAVAILABLE);
         }
         if attempt == MAX_RETRIES {
             warn!(
                 url,
                 "horizon rate-limited after {} retries, giving up", MAX_RETRIES
             );
-            return Err(AppError::Internal);
+            return Err(AppError::HORIZON_UNAVAILABLE);
         }
         warn!(url, attempt, delay_ms, "horizon 429 — backing off");
         sleep(Duration::from_millis(delay_ms)).await;
         delay_ms *= 2;
     }
-    Err(AppError::Internal)
+    Err(AppError::INTERNAL)
 }
 
 /// Maximum bytes for a Stellar text memo (protocol limit).
@@ -113,15 +123,18 @@ pub async fn confirm_transaction(
         config.horizon_url.trim_end_matches('/'),
         tx_hash
     );
-    let resp = Client::new()
+    let resp = horizon_client()?
         .get(url)
         .send()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?;
     if resp.status() == 404 {
         return Ok(TransactionStatus::NotFound);
     }
-    let tx: serde_json::Value = resp.json().await.map_err(|_| AppError::Internal)?;
+    let resp = resp
+        .error_for_status()
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?;
+    let tx: serde_json::Value = resp.json().await.map_err(|_| AppError::INTERNAL)?;
     if tx.get("successful").and_then(|v| v.as_bool()) == Some(true) {
         Ok(TransactionStatus::Success)
     } else {
@@ -205,7 +218,7 @@ pub fn payment_matches_invoice(record: &serde_json::Value, memo: &str, invoice: 
 /// gross amount (formatted to two decimal places), and transaction memo.
 ///
 /// Returns `None` if no matching payment is found in that window.
-/// Returns `Err(AppError::Internal)` if the Horizon HTTP call or JSON parse fails.
+/// Returns `Err(AppError::INTERNAL)` if the Horizon HTTP call or JSON parse fails.
 ///
 /// **Limit**: only the 50 most recent operations are inspected. Payments older than that window
 /// will not be detected. Use the replay endpoint to rescan a specific invoice manually.
@@ -218,12 +231,12 @@ pub async fn find_payment_for_invoice(
         config.horizon_url.trim_end_matches('/'),
         invoice.destination_public_key
     );
-    let client = Client::new();
+    let client = horizon_client()?;
     let page = horizon_get(&client, &payments_url)
         .await?
         .json::<PaymentsPage>()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|_| AppError::INTERNAL)?;
 
     let expected_amount = invoice_amount_to_asset(invoice);
 
@@ -262,7 +275,7 @@ pub async fn find_payment_for_invoice(
                 .await?
                 .json::<HorizonTransaction>()
                 .await
-                .map_err(|_| AppError::Internal)?;
+                .map_err(|_| AppError::INTERNAL)?;
 
             if tx.memo == invoice.memo {
                 return Ok(PaymentScanResult::AmountMismatch(AmountMismatch {
@@ -287,7 +300,7 @@ pub async fn find_payment_for_invoice(
             .await?
             .json::<HorizonTransaction>()
             .await
-            .map_err(|_| AppError::Internal)?;
+            .map_err(|_| AppError::INTERNAL)?;
 
         if payment_matches_invoice(&record.raw, &tx.memo, invoice) {
             return Ok(PaymentScanResult::Match(PaymentMatch {
@@ -333,16 +346,16 @@ pub async fn fetch_treasury_payments(
         config.platform_treasury_public_key,
         limit,
     );
-    let page = Client::new()
+    let page = horizon_client()?
         .get(url)
         .send()
         .await
-        .map_err(|_| AppError::Internal)?
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?
         .error_for_status()
-        .map_err(|_| AppError::Internal)?
+        .map_err(|_| AppError::HORIZON_UNAVAILABLE)?
         .json::<PaymentsPage>()
         .await
-        .map_err(|_| AppError::Internal)?;
+        .map_err(|_| AppError::INTERNAL)?;
 
     let payments = page
         .embedded
@@ -443,6 +456,8 @@ mod tests {
             reconcile_scan_window_hours: 0,
             log_format: LogFormat::Human,
             archive_retention_days: 30,
+            pending_invoice_alert_threshold_secs: 7200,
+            queued_payout_alert_threshold_secs: 3600,
         }
     }
 
@@ -585,26 +600,35 @@ mod tests {
     fn horizon_unavailable_error_code_is_distinct_from_internal() {
         use crate::error::{AppError, ErrorCode};
         assert_ne!(
-            AppError::HorizonUnavailable.code as u8,
-            AppError::Internal.code as u8,
+            AppError::HORIZON_UNAVAILABLE.code as u8,
+            AppError::INTERNAL.code as u8,
             "HorizonUnavailable and Internal must be distinct error codes"
         );
-        assert_eq!(AppError::HorizonUnavailable.code, ErrorCode::HorizonUnavailable);
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.code,
+            ErrorCode::HorizonUnavailable
+        );
     }
 
     /// HorizonUnavailable must be classified as Upstream so Sentry captures it.
     #[test]
     fn horizon_unavailable_classifies_as_upstream() {
         use crate::error::{AppError, ErrorClass};
-        assert_eq!(AppError::HorizonUnavailable.classify(), ErrorClass::Upstream);
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.classify(),
+            ErrorClass::Upstream
+        );
     }
 
     /// HorizonUnavailable must return HTTP 502 so load-balancers can detect it.
     #[test]
     fn horizon_unavailable_has_502_status() {
-        use axum::http::StatusCode;
         use crate::error::AppError;
-        assert_eq!(AppError::HorizonUnavailable.status, StatusCode::BAD_GATEWAY);
+        use axum::http::StatusCode;
+        assert_eq!(
+            AppError::HORIZON_UNAVAILABLE.status,
+            StatusCode::BAD_GATEWAY
+        );
     }
 
     /// Reconcile must skip (not mark paid/expired) when Horizon is unavailable.
@@ -635,7 +659,7 @@ mod tests {
         use crate::error::{AppError, ErrorCode};
         // Simulate what find_payment_for_invoice returns when horizon_get fails on the
         // payments URL. The error must be HorizonUnavailable so reconcile can match it.
-        let err = AppError::HorizonUnavailable;
+        let err = AppError::HORIZON_UNAVAILABLE;
         assert_eq!(err.code, ErrorCode::HorizonUnavailable);
         // Reconcile matches: Err(AppError { code: HorizonUnavailable, .. }) => skip
         // Verify the match pattern exists in the handler source.
@@ -647,7 +671,7 @@ mod tests {
     }
 
     /// Partial outage: payments page succeeds but transaction fetch fails.
-    /// In this case find_payment_for_invoice returns Err(AppError::Internal),
+    /// In this case find_payment_for_invoice returns Err(AppError::INTERNAL),
     /// which reconcile must NOT swallow — it must propagate as a hard error.
     #[test]
     fn reconcile_propagates_non_horizon_errors() {
@@ -666,32 +690,38 @@ mod tests {
         assert_eq!(super::MAX_RETRIES, 4);
     }
 
-    /// After MAX_RETRIES exhausted on 429, the error must be Internal (rate-limit
-    /// exhaustion is an operational failure, not a transient Horizon outage).
     #[test]
-    fn horizon_get_returns_internal_after_max_429_retries() {
+    fn horizon_client_has_bounded_request_timeout() {
+        assert_eq!(super::HORIZON_REQUEST_TIMEOUT_SECS, 15);
+        let src = include_str!("stellar.rs");
+        assert!(
+            src.contains(".timeout(Duration::from_secs(HORIZON_REQUEST_TIMEOUT_SECS))"),
+            "Horizon client must use a bounded request timeout"
+        );
+    }
+
+    /// After MAX_RETRIES exhausted on 429, reconcile should classify Horizon as
+    /// unavailable so one throttled scan does not fail the whole batch.
+    #[test]
+    fn horizon_get_returns_horizon_unavailable_after_max_429_retries() {
         use crate::error::{AppError, ErrorCode};
-        // The horizon_get source returns Err(AppError::Internal) after MAX_RETRIES.
         let src = include_str!("stellar.rs");
         assert!(
             src.contains("horizon rate-limited after {} retries, giving up"),
-            "horizon_get must log exhaustion before returning Internal"
+            "horizon_get must log exhaustion before returning HorizonUnavailable"
         );
-        // Confirm the returned error is Internal, not HorizonUnavailable.
-        // (Rate-limit exhaustion is a different failure mode from a 503.)
-        let err = AppError::Internal;
-        assert_eq!(err.code, ErrorCode::Internal);
+        let err = AppError::HORIZON_UNAVAILABLE;
+        assert_eq!(err.code, ErrorCode::HorizonUnavailable);
     }
 
-    /// Timeout / connection-refused from reqwest surfaces as AppError::Internal
-    /// (the map_err in horizon_get maps send() failures to Internal).
+    /// Timeout / connection-refused from reqwest surfaces as HorizonUnavailable
+    /// so reconciliation can skip the invoice and continue the batch.
     #[test]
-    fn horizon_get_maps_send_failure_to_internal() {
+    fn horizon_get_maps_send_failure_to_horizon_unavailable() {
         let src = include_str!("stellar.rs");
-        // The .send().await.map_err(|_| AppError::Internal) line must be present.
         assert!(
-            src.contains("map_err(|_| AppError::Internal)"),
-            "horizon_get must map send() errors to AppError::Internal"
+            src.contains("map_err(|_| AppError::HORIZON_UNAVAILABLE)"),
+            "horizon_get must map send() errors to AppError::HORIZON_UNAVAILABLE"
         );
     }
 
@@ -768,5 +798,6 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].transaction_hash, "hash_usdc");
         assert_eq!(filtered[0].from, "GSENDER1");
+        assert_eq!(filtered[0].amount, "20.00");
     }
 }

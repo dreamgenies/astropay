@@ -4,7 +4,7 @@ test('checkout smoke test with mocked wallet adapter', async ({ page }) => {
   // Mock Freighter wallet functions
   await page.addInitScript(() => {
     // Mock the @stellar/freighter-api functions
-    window.stellar = {
+    (window as unknown as { stellar: unknown }).stellar = {
       freighter: {
         isConnected: async () => ({ isConnected: true }),
         requestAccess: async () => ({ address: 'GBTESTADDRESS1234567890123456789012345678901234567890' }),

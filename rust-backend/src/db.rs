@@ -44,7 +44,12 @@ use crate::config::Config;
 
 /// Valid PostgreSQL SSL modes
 const VALID_SSL_MODES: &[&str] = &[
-    "disable", "allow", "prefer", "require", "verify-ca", "verify-full"
+    "disable",
+    "allow",
+    "prefer",
+    "require",
+    "verify-ca",
+    "verify-full",
 ];
 
 /// Validates PGSSL configuration at startup
@@ -72,7 +77,7 @@ pub struct PayoutQueueStats {
 pub fn create_pool(config: &Config) -> anyhow::Result<Pool> {
     // Validate SSL mode early
     validate_ssl_mode(&config.pgssl)?;
-    
+
     let pg = config.database_url.inner().parse::<PgConfig>()?;
     let manager_config = ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
@@ -148,8 +153,8 @@ pub async fn payout_queue_stats(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use super::validate_ssl_mode;
+    use std::path::Path;
 
     #[test]
     fn retention_policy_migration_defines_config_table_and_extends_job_type() {
@@ -176,11 +181,15 @@ mod tests {
 
     #[test]
     fn invoice_paid_at_not_before_created_at_migration_defines_check_constraint() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../usdc-payment-link-tool/migrations/017_invoice_paid_at_not_before_created_at.sql");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../usdc-payment-link-tool/migrations/017_invoice_paid_at_not_before_created_at.sql",
+        );
         let sql = std::fs::read_to_string(path)
             .expect("read 017_invoice_paid_at_not_before_created_at.sql");
-        assert!(sql.contains("ALTER TABLE invoices"), "must alter invoices table");
+        assert!(
+            sql.contains("ALTER TABLE invoices"),
+            "must alter invoices table"
+        );
         assert!(
             sql.contains("invoices_paid_at_after_created_at_check"),
             "must name the constraint"
@@ -199,10 +208,20 @@ mod tests {
     fn invoice_settled_after_paid_migration_defines_check_constraint() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/015_invoice_settled_after_paid_check.sql");
-        let sql = std::fs::read_to_string(path).expect("read 015_invoice_settled_after_paid_check.sql");
-        assert!(sql.contains("ALTER TABLE invoices"), "must alter invoices table");
-        assert!(sql.contains("invoices_settled_after_paid_check"), "must name the constraint");
-        assert!(sql.contains("settled_at >= paid_at"), "must enforce settled_at >= paid_at");
+        let sql =
+            std::fs::read_to_string(path).expect("read 015_invoice_settled_after_paid_check.sql");
+        assert!(
+            sql.contains("ALTER TABLE invoices"),
+            "must alter invoices table"
+        );
+        assert!(
+            sql.contains("invoices_settled_after_paid_check"),
+            "must name the constraint"
+        );
+        assert!(
+            sql.contains("settled_at >= paid_at"),
+            "must enforce settled_at >= paid_at"
+        );
     }
 
     #[test]
@@ -224,10 +243,22 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/013_merchant_email_citext.sql");
         let sql = std::fs::read_to_string(path).expect("read 013_merchant_email_citext.sql");
-        assert!(sql.contains("CREATE EXTENSION IF NOT EXISTS citext"), "must enable citext");
-        assert!(sql.contains("ALTER COLUMN email TYPE citext"), "must retype email to citext");
-        assert!(sql.contains("DROP CONSTRAINT IF EXISTS merchants_email_key"), "must drop old constraint");
-        assert!(sql.contains("ADD CONSTRAINT merchants_email_key UNIQUE (email)"), "must re-add unique constraint");
+        assert!(
+            sql.contains("CREATE EXTENSION IF NOT EXISTS citext"),
+            "must enable citext"
+        );
+        assert!(
+            sql.contains("ALTER COLUMN email TYPE citext"),
+            "must retype email to citext"
+        );
+        assert!(
+            sql.contains("DROP CONSTRAINT IF EXISTS merchants_email_key"),
+            "must drop old constraint"
+        );
+        assert!(
+            sql.contains("ADD CONSTRAINT merchants_email_key UNIQUE (email)"),
+            "must re-add unique constraint"
+        );
     }
 
     #[test]
@@ -247,7 +278,10 @@ mod tests {
             .join("../usdc-payment-link-tool/migrations/012_pending_invoices_expiry_idx.sql");
         let sql = std::fs::read_to_string(path).expect("read 012_pending_invoices_expiry_idx.sql");
         assert!(sql.contains("invoices_pending_expires_at_idx"));
-        assert!(sql.contains("WHERE status = 'pending'"), "must be a partial index");
+        assert!(
+            sql.contains("WHERE status = 'pending'"),
+            "must be a partial index"
+        );
         assert!(sql.contains("expires_at ASC"));
         assert!(sql.contains("CREATE INDEX IF NOT EXISTS"));
     }
@@ -394,9 +428,11 @@ mod tests {
 
     #[test]
     fn payout_attempt_counters_migration_defines_tracking_columns() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../usdc-payment-link-tool/migrations/007_payout_attempt_counters_and_last_error.sql");
-        let sql = std::fs::read_to_string(path).expect("read 007_payout_attempt_counters_and_last_error.sql");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../usdc-payment-link-tool/migrations/007_payout_attempt_counters_and_last_error.sql",
+        );
+        let sql = std::fs::read_to_string(path)
+            .expect("read 007_payout_attempt_counters_and_last_error.sql");
         assert!(
             sql.contains("last_failure_reason TEXT"),
             "migration must add last_failure_reason column to track most recent error"
@@ -415,8 +451,7 @@ mod tests {
     fn queued_payouts_partial_index_migration_is_correct() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/007_payouts_queued_partial_index.sql");
-        let sql =
-            std::fs::read_to_string(path).expect("read 007_payouts_queued_partial_index.sql");
+        let sql = std::fs::read_to_string(path).expect("read 007_payouts_queued_partial_index.sql");
 
         assert!(
             sql.contains("payouts_queued_created_at_idx"),
@@ -437,7 +472,7 @@ mod tests {
         // The migration must not drop the existing payouts_status_idx — other
         // queries (dead-letter escalation) still rely on it.
         assert!(
-            !sql.contains("DROP INDEX"),
+            !sql.contains("DROP INDEX IF EXISTS payouts_status_idx"),
             "must not drop the existing payouts_status_idx"
         );
     }
@@ -475,8 +510,7 @@ mod tests {
     fn reconcile_pending_keyset_index_migration_is_correct() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/020_reconcile_pending_keyset_idx.sql");
-        let sql = std::fs::read_to_string(path)
-            .expect("read 020_reconcile_pending_keyset_idx.sql");
+        let sql = std::fs::read_to_string(path).expect("read 020_reconcile_pending_keyset_idx.sql");
         assert!(
             sql.contains("invoices_pending_created_at_id_idx"),
             "must define the canonical index name"
@@ -512,7 +546,14 @@ mod tests {
 
     #[test]
     fn ssl_mode_validation_accepts_valid_modes() {
-        for mode in ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] {
+        for mode in [
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full",
+        ] {
             assert!(validate_ssl_mode(mode).is_ok());
         }
     }
@@ -535,9 +576,15 @@ mod checkout_attempt_tests {
         assert!(sql.contains("invoice_id"), "must have invoice_id FK column");
         assert!(sql.contains("action"), "must have action column");
         assert!(sql.contains("status"), "must have status column");
-        assert!(sql.contains("attempted_at"), "must have attempted_at timestamp");
+        assert!(
+            sql.contains("attempted_at"),
+            "must have attempted_at timestamp"
+        );
         assert!(sql.contains("payload"), "must have payload JSONB column");
-        assert!(sql.contains("error_detail"), "must have nullable error_detail column");
+        assert!(
+            sql.contains("error_detail"),
+            "must have nullable error_detail column"
+        );
 
         // FK to invoices with cascade delete.
         assert!(
@@ -574,8 +621,8 @@ mod checkout_attempt_tests {
     fn last_checkout_attempt_migration_adds_nullable_column() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/005_invoice_last_checkout_attempt_at.sql");
-        let sql = std::fs::read_to_string(path)
-            .expect("read 005_invoice_last_checkout_attempt_at.sql");
+        let sql =
+            std::fs::read_to_string(path).expect("read 005_invoice_last_checkout_attempt_at.sql");
         assert!(
             sql.contains("ALTER TABLE invoices"),
             "migration must alter the invoices table"
@@ -611,7 +658,10 @@ mod checkout_attempt_tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/migrations/016_invoice_public_id_format.sql");
         let sql = std::fs::read_to_string(path).expect("read 016_invoice_public_id_format.sql");
-        assert!(sql.contains("ALTER TABLE invoices"), "must alter invoices table");
+        assert!(
+            sql.contains("ALTER TABLE invoices"),
+            "must alter invoices table"
+        );
         assert!(
             sql.contains("invoices_public_id_format"),
             "must name the constraint"

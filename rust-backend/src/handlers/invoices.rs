@@ -96,7 +96,7 @@ pub async fn create_invoice(
     let invoice = Invoice::from_row(&row);
     let checkout_url = build_checkout_url(&state.config, &invoice.public_id);
     let qr_svg = QrCode::new(checkout_url.as_bytes())
-        .map_err(|_| AppError::Internal)?
+        .map_err(|_| AppError::INTERNAL)?
         .render::<svg::Color>()
         .min_dimensions(280, 280)
         .build();

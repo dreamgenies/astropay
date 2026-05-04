@@ -115,7 +115,7 @@ fn retry_after_seconds(events: &[OffsetDateTime], window: Duration, now: OffsetD
         return 1;
     };
     let until = oldest + window - now;
-    let secs = until.whole_seconds().max(1).min(86_400);
+    let secs = until.whole_seconds().clamp(1, 86_400);
     secs as u64
 }
 

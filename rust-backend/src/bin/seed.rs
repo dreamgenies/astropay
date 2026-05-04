@@ -59,8 +59,7 @@ const ASSET_ISSUER: &str = "GBBD47IF6A3JQRYKRQJ3235GHKJ4GQV4QJV6T4QNVWJ6K4H2L6LJ
 // Regenerate with: node -e "require('crypto').scrypt('demo1234','salt',64,(e,k)=>console.log(k.toString('hex')))"
 // The auth handler uses its own hash/verify; this value is only for seeding.
 // ---------------------------------------------------------------------------
-const DEMO_PASSWORD_HASH: &str =
-    "$scrypt$ln=14,r=8,p=1$c2FsdA$\
+const DEMO_PASSWORD_HASH: &str = "$scrypt$ln=14,r=8,p=1$c2FsdA$\
      AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 #[tokio::main]
@@ -75,8 +74,8 @@ async fn main() -> anyhow::Result<()> {
         let _ = from_filename(path);
     }
 
-    let database_url = std::env::var("DATABASE_URL")
-        .map_err(|_| anyhow::anyhow!("DATABASE_URL is not set"))?;
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL is not set"))?;
 
     let (client, connection) = tokio_postgres::connect(&database_url, NoTls).await?;
     tokio::spawn(async move {
@@ -111,7 +110,13 @@ async fn main() -> anyhow::Result<()> {
                    (email, password_hash, business_name, stellar_public_key, settlement_public_key)
                  VALUES ($1, $2, $3, $4, $5)
                  ON CONFLICT (email) DO NOTHING",
-                &[email, password_hash, business_name, stellar_key, settlement_key],
+                &[
+                    email,
+                    password_hash,
+                    business_name,
+                    stellar_key,
+                    settlement_key,
+                ],
             )
             .await?;
         if rows > 0 {
@@ -236,8 +241,8 @@ async fn main() -> anyhow::Result<()> {
             let gross = seed.amount_cents;
             let net = gross - fee;
 
-            let expires_at = chrono::Utc::now()
-                + chrono::Duration::hours(seed.expires_offset_hours);
+            let expires_at =
+                chrono::Utc::now() + chrono::Duration::hours(seed.expires_offset_hours);
             let paid_at = seed
                 .paid_offset_hours
                 .map(|h| chrono::Utc::now() + chrono::Duration::hours(h));

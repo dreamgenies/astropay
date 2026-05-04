@@ -147,7 +147,7 @@ fn payout_and_invoice_reach_identical_terminal_status() {
 fn invoice_status_enum_covers_all_db_values() {
     for s in ["pending", "paid", "settled", "expired", "failed"] {
         assert!(
-            InvoiceStatus::from_str(s).is_some(),
+            InvoiceStatus::parse_status(s).is_some(),
             "InvoiceStatus missing variant for '{s}'"
         );
     }
@@ -157,7 +157,7 @@ fn invoice_status_enum_covers_all_db_values() {
 fn payout_status_enum_covers_all_db_values() {
     for s in ["queued", "submitted", "settled", "failed", "dead_lettered"] {
         assert!(
-            PayoutStatus::from_str(s).is_some(),
+            PayoutStatus::parse_status(s).is_some(),
             "PayoutStatus missing variant for '{s}'"
         );
     }

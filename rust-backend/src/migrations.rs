@@ -5,6 +5,8 @@ use std::{
 
 use tokio_postgres::Client;
 
+const MIGRATION_ADVISORY_LOCK_ID: i64 = 4_207_001;
+
 pub fn default_migrations_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../usdc-payment-link-tool/migrations")
 }
@@ -61,15 +63,22 @@ pub async fn apply_pending_migrations(
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("invalid migration file name: {}", file.display()))?
             .to_string();
-        let exists = client
-            .query_opt("SELECT 1 FROM schema_migrations WHERE id = $1", &[&name])
-            .await?;
-        if exists.is_some() {
-            continue;
-        }
 
         let sql = fs::read_to_string(&file)?;
         let transaction = client.transaction().await?;
+        transaction
+            .execute(
+                "SELECT pg_advisory_xact_lock($1)",
+                &[&MIGRATION_ADVISORY_LOCK_ID],
+            )
+            .await?;
+        let exists = transaction
+            .query_opt("SELECT 1 FROM schema_migrations WHERE id = $1", &[&name])
+            .await?;
+        if exists.is_some() {
+            transaction.commit().await?;
+            continue;
+        }
         transaction
             .batch_execute(&sql)
             .await
@@ -127,6 +136,21 @@ mod tests {
         assert!(insert.contains("'rust'"));
     }
 
+    #[test]
+    fn migrations_use_transaction_scoped_advisory_lock() {
+        let src = include_str!("migrations.rs");
+        let lock_fn = ["pg_advisory", "_xact_lock"].concat();
+        let exists_query = ["SELECT 1 FROM ", "schema_migrations WHERE id = $1"].concat();
+        assert!(
+            src.contains(&lock_fn),
+            "migration runner must serialize competing runners with a transaction-scoped advisory lock"
+        );
+        assert!(
+            src.contains(&exists_query),
+            "migration runner must re-check schema_migrations inside the locked transaction"
+        );
+    }
+
     /// The applied_by migration must be idempotent and use ADD COLUMN IF NOT EXISTS.
     #[test]
     fn applied_by_migration_is_idempotent() {
@@ -145,12 +169,30 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../usdc-payment-link-tool/scripts/run-migrations.mjs");
         let src = std::fs::read_to_string(path).expect("read run-migrations.mjs");
-        assert!(src.contains("CREATE TABLE IF NOT EXISTS schema_migrations"), "nextjs must create schema_migrations");
-        assert!(src.contains("id         TEXT PRIMARY KEY"), "nextjs id column must match rust DDL");
-        assert!(src.contains("applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"), "nextjs applied_at must match rust DDL");
-        assert!(src.contains("applied_by TEXT        NOT NULL DEFAULT 'unknown'"), "nextjs applied_by must match rust DDL");
-        assert!(src.contains("'nextjs'"), "nextjs runner must record applied_by = 'nextjs'");
-        assert!(src.contains("ADD COLUMN IF NOT EXISTS applied_by"), "nextjs must backfill applied_by idempotently");
+        assert!(
+            src.contains("CREATE TABLE IF NOT EXISTS schema_migrations"),
+            "nextjs must create schema_migrations"
+        );
+        assert!(
+            src.contains("id         TEXT PRIMARY KEY"),
+            "nextjs id column must match rust DDL"
+        );
+        assert!(
+            src.contains("applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+            "nextjs applied_at must match rust DDL"
+        );
+        assert!(
+            src.contains("applied_by TEXT        NOT NULL DEFAULT 'unknown'"),
+            "nextjs applied_by must match rust DDL"
+        );
+        assert!(
+            src.contains("'nextjs'"),
+            "nextjs runner must record applied_by = 'nextjs'"
+        );
+        assert!(
+            src.contains("ADD COLUMN IF NOT EXISTS applied_by"),
+            "nextjs must backfill applied_by idempotently"
+        );
     }
 
     /// migration_files must return an error when the directory does not exist.
