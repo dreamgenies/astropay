@@ -11,6 +11,9 @@ export type MarkInvoicePaidPayoutResult = {
   payoutSkipReason: 'invalid_settlement_public_key' | 'payout_already_queued' | null;
 };
 
+export type CheckoutAttemptAction = 'build' | 'submit';
+export type CheckoutAttemptStatus = 'succeeded' | 'failed';
+
 export const findMerchantByEmail = async (email: string) => {
   const result = await query<(Merchant & { password_hash: string })>(
     'SELECT id, email, business_name, stellar_public_key, settlement_public_key, password_hash, created_at FROM merchants WHERE email = $1',
@@ -103,6 +106,31 @@ export const getInvoiceByPublicId = async (publicId: string) => {
 export const getInvoiceById = async (id: string) => {
   const result = await query<Invoice>('SELECT * FROM invoices WHERE id = $1', [id]);
   return result.rows[0] || null;
+};
+
+export const recordCheckoutAttempt = async ({
+  invoiceId,
+  action,
+  status,
+  errorDetail = null,
+  payload = {},
+}: {
+  invoiceId: string;
+  action: CheckoutAttemptAction;
+  status: CheckoutAttemptStatus;
+  errorDetail?: string | null;
+  payload?: Record<string, unknown>;
+}) => {
+  try {
+    await query(
+      `INSERT INTO checkout_attempts (invoice_id, action, status, error_detail, payload)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [invoiceId, action, status, errorDetail, JSON.stringify(payload)],
+    );
+    await query('UPDATE invoices SET last_checkout_attempt_at = NOW(), updated_at = NOW() WHERE id = $1', [invoiceId]);
+  } catch {
+    // Checkout audit writes are best-effort so observability cannot block payment.
+  }
 };
 
 export const isTransactionHashAlreadyProcessed = async (transactionHash: string): Promise<boolean> => {

@@ -32,12 +32,12 @@ test('invoice expiry transition e2e test', async ({ page, request }) => {
   // Call reconcile API
   const reconcileResponse = await request.get('/api/cron/reconcile', {
     headers: {
-      'x-cron-secret': process.env.CRON_SECRET || 'cron'
+      authorization: `Bearer ${process.env.CRON_SECRET || 'cron'}`,
     }
   });
   expect(reconcileResponse.ok()).toBe(true);
   const reconcileData = await reconcileResponse.json();
-  expect(reconcileData).toContainEqual(expect.objectContaining({ action: 'expired' }));
+  expect(reconcileData.results).toContainEqual(expect.objectContaining({ action: 'expired' }));
 
   // Check invoice status
   const statusResponse = await request.get(`/api/invoices/${invoiceId}/status`);
